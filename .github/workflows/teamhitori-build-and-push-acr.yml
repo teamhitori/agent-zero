@@ -156,7 +156,7 @@ jobs:
           cache-to: type=gha,mode=max,scope=teamhitori-${{ steps.target.outputs.channel }}
 
       - name: Trivy vulnerability scan (HIGH/CRITICAL — fail build)
-        uses: aquasecurity/trivy-action@0.24.0
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           image-ref: ${{ steps.target.outputs.primary_ref }}
           format: table
