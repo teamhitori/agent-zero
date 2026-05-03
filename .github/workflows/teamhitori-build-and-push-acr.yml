@@ -1,0 +1,208 @@
+name: Build & Push (ACR — Pocket Smyth)
+
+# ===================================================================
+# Pocket Smyth (Team Hitori) fork CI/CD
+# -------------------------------------------------------------------
+# Triggers:
+#   - push to teamhitori-main         -> repo: pocket-smyth/agent-zero-prod
+#   - push to feat/**                 -> repo: pocket-smyth/agent-zero-dev
+#   - workflow_dispatch (manual)      -> repo chosen by selected ref
+#
+# Tag scheme:
+#   <branch-slug>-<run_number>
+#   teamhitori-main also receives `latest` (only when Trivy passes).
+#
+# Auth: Service principal credentials in repo secrets:
+#   AZURE_CLIENT_ID, AZURE_CLIENT_SECRET, AZURE_TENANT_ID, AZURE_SUBSCRIPTION_ID
+# Vars: configured at repo or org level (vars.* context):
+#   ACR_NAME (default: acrteamhsmyth)
+#   ACR_LOGIN_SERVER (default: acrteamhsmyth.azurecr.io)
+#
+# This workflow is OWNED BY the Team Hitori fork. It is gated by
+# repository owner so it is a no-op if upstream ever pulls our config.
+# Upstream's docker-publish.yml is left untouched on this branch to
+# minimise rebase friction.
+# ===================================================================
+
+on:
+  push:
+    branches:
+      - "teamhitori-main"
+      - "feat/**"
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Branch/tag/SHA to build (defaults to current ref)"
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: acr-build-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  ACR_NAME: ${{ vars.ACR_NAME || 'acrteamhsmyth' }}
+  ACR_LOGIN_SERVER: ${{ vars.ACR_LOGIN_SERVER || 'acrteamhsmyth.azurecr.io' }}
+  DEV_REPO: pocket-smyth/agent-zero-dev
+  PROD_REPO: pocket-smyth/agent-zero-prod
+  DOCKERFILE: docker/teamhitori/Dockerfile
+  BUILD_CONTEXT: .
+  PLATFORMS: linux/amd64
+
+jobs:
+  build-and-push:
+    # Skip if this workflow ever lands on the upstream agent0ai org via merge.
+    if: github.repository_owner != 'agent0ai'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.ref || github.ref }}
+          fetch-depth: 1
+
+      - name: Validate required secrets
+        env:
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+        run: |
+          missing=()
+          [[ -z "$AZURE_CLIENT_ID" ]]       && missing+=("AZURE_CLIENT_ID")
+          [[ -z "$AZURE_CLIENT_SECRET" ]]   && missing+=("AZURE_CLIENT_SECRET")
+          [[ -z "$AZURE_TENANT_ID" ]]       && missing+=("AZURE_TENANT_ID")
+          [[ -z "$AZURE_SUBSCRIPTION_ID" ]] && missing+=("AZURE_SUBSCRIPTION_ID")
+          if (( ${#missing[@]} > 0 )); then
+            echo "::error::Missing required secrets: ${missing[*]}"
+            exit 1
+          fi
+
+      - name: Resolve target repo + tags
+        id: target
+        env:
+          REF_NAME: ${{ github.event.inputs.ref || github.ref_name }}
+        run: |
+          set -euo pipefail
+          REF_NAME="${REF_NAME#refs/heads/}"
+          REF_NAME="${REF_NAME#refs/tags/}"
+          # Slugify: lowercase, replace anything not [a-z0-9.] with '-', trim '-'
+          slug=$(echo "$REF_NAME" \
+            | tr '[:upper:]' '[:lower:]' \
+            | sed -E 's#[^a-z0-9.]+#-#g; s#^-+##; s#-+$##')
+          slug="${slug:0:80}"
+
+          if [[ "$REF_NAME" == "teamhitori-main" ]]; then
+            repo="${{ env.PROD_REPO }}"
+            channel="prod"
+          else
+            repo="${{ env.DEV_REPO }}"
+            channel="dev"
+          fi
+
+          run_tag="${slug}-${{ github.run_number }}"
+          full_image="${{ env.ACR_LOGIN_SERVER }}/${repo}"
+
+          {
+            echo "repo=${repo}"
+            echo "channel=${channel}"
+            echo "slug=${slug}"
+            echo "run_tag=${run_tag}"
+            echo "full_image=${full_image}"
+            echo "primary_ref=${full_image}:${run_tag}"
+            echo "sha_ref=${full_image}:sha-${GITHUB_SHA::7}"
+          } >> "$GITHUB_OUTPUT"
+
+          echo "Target image: ${full_image}:${run_tag}"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Azure login (service principal)
+        uses: azure/login@v2
+        with:
+          creds: |
+            {
+              "clientId": "${{ secrets.AZURE_CLIENT_ID }}",
+              "clientSecret": "${{ secrets.AZURE_CLIENT_SECRET }}",
+              "tenantId": "${{ secrets.AZURE_TENANT_ID }}",
+              "subscriptionId": "${{ secrets.AZURE_SUBSCRIPTION_ID }}"
+            }
+
+      - name: ACR login
+        run: az acr login --name "${{ env.ACR_NAME }}"
+
+      - name: Build image (load to local daemon for scanning)
+        uses: docker/build-push-action@v6
+        with:
+          context: ${{ env.BUILD_CONTEXT }}
+          file: ${{ env.DOCKERFILE }}
+          platforms: ${{ env.PLATFORMS }}
+          push: false
+          load: true
+          tags: |
+            ${{ steps.target.outputs.primary_ref }}
+            ${{ steps.target.outputs.sha_ref }}
+          build-args: |
+            GIT_SHA=${{ github.sha }}
+            GIT_REF=${{ github.ref_name }}
+            BUILD_DATE=${{ github.event.repository.updated_at }}
+            CACHE_DATE=${{ github.run_id }}
+          cache-from: type=gha,scope=teamhitori-${{ steps.target.outputs.channel }}
+          cache-to: type=gha,mode=max,scope=teamhitori-${{ steps.target.outputs.channel }}
+
+      - name: Trivy vulnerability scan (HIGH/CRITICAL — fail build)
+        uses: aquasecurity/trivy-action@0.24.0
+        with:
+          image-ref: ${{ steps.target.outputs.primary_ref }}
+          format: table
+          exit-code: "1"
+          ignore-unfixed: true
+          vuln-type: "os,library"
+          severity: "HIGH,CRITICAL"
+
+      - name: Push image to ACR
+        uses: docker/build-push-action@v6
+        with:
+          context: ${{ env.BUILD_CONTEXT }}
+          file: ${{ env.DOCKERFILE }}
+          platforms: ${{ env.PLATFORMS }}
+          push: true
+          tags: |
+            ${{ steps.target.outputs.primary_ref }}
+            ${{ steps.target.outputs.sha_ref }}
+          build-args: |
+            GIT_SHA=${{ github.sha }}
+            GIT_REF=${{ github.ref_name }}
+            BUILD_DATE=${{ github.event.repository.updated_at }}
+            CACHE_DATE=${{ github.run_id }}
+          cache-from: type=gha,scope=teamhitori-${{ steps.target.outputs.channel }}
+
+      - name: Tag `latest` (teamhitori-main only)
+        if: steps.target.outputs.channel == 'prod'
+        run: |
+          src="${{ steps.target.outputs.primary_ref }}"
+          dst="${{ steps.target.outputs.full_image }}:latest"
+          docker pull "$src"
+          docker tag "$src" "$dst"
+          docker push "$dst"
+
+      - name: Summarize
+        run: |
+          {
+            echo "### Pocket Smyth image published"
+            echo ""
+            echo "| Field | Value |"
+            echo "|---|---|"
+            echo "| Channel | \`${{ steps.target.outputs.channel }}\` |"
+            echo "| Repo | \`${{ steps.target.outputs.repo }}\` |"
+            echo "| Primary tag | \`${{ steps.target.outputs.primary_ref }}\` |"
+            echo "| SHA tag | \`${{ steps.target.outputs.sha_ref }}\` |"
+            if [[ "${{ steps.target.outputs.channel }}" == "prod" ]]; then
+              echo "| Floating | \`${{ steps.target.outputs.full_image }}:latest\` |"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"

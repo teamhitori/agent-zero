@@ -1,0 +1,71 @@
+# ===================================================================
+# Per-Dockerfile ignore (BuildKit picks this up for adjacent Dockerfile)
+# Applies to `docker build -f docker/teamhitori/Dockerfile .`
+#
+# Goal: minimal, deterministic Layer-1 contents per
+# logic-agent-platform/docs/releases/Release-2/system-design-E-11.md
+# (with webui/ INTENTIONALLY KEPT for now — fallback, replaced by
+# Layer-2 :ro mount in production).
+# ===================================================================
+
+# ---- VCS / editor / OS junk ---------------------------------------
+.git/
+.github/
+.gitignore
+.gitattributes
+.vscode/
+.idea/
+.cursor/
+.conda/
+.venv/
+**/.DS_Store
+**/Thumbs.db
+
+# ---- Build infrastructure (not needed at runtime) -----------------
+docker/
+DockerfileLocal
+.dockerignore
+docker-compose*.yml
+docker-compose*.yaml
+
+# ---- Documentation / metadata -------------------------------------
+docs/
+README.md
+LICENSE
+AGENTS.md
+CONTRIBUTING.md
+
+# ---- Tests --------------------------------------------------------
+tests/
+/*.test.py
+
+# ---- Runtime-only directories (created via volume mounts) ---------
+tmp/
+tmp/**
+usr/
+usr/**
+logs/
+logs/**
+memory/
+memory/**
+instruments/**
+knowledge/custom/**
+
+# ---- Python / tooling caches --------------------------------------
+**/__pycache__/
+**/*.py[cod]
+**/*.pyo
+**/*.pyd
+
+# ---- Secrets / env files ------------------------------------------
+*.env
+.env
+.env.*
+
+# ---- Re-includes (must be last) -----------------------------------
+!**/.gitkeep
+
+# NOTE: webui/ is intentionally NOT excluded — it is baked into the
+# image as a fallback. In production it is shadowed by a :ro bind
+# mount from /platform/webui (Layer 2). When that delivery model is
+# fully operational, add `webui/` here to drop ~MBs from the image.
