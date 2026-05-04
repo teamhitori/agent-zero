@@ -15,7 +15,7 @@ kokoro>=0.9.2
 simpleeval>=1.0.5  # CVE-2026-32640: sandbox escape RCE
 langchain-core>=1.2.22,<2  # CVE-2026-34070: load_prompt path traversal — only fixed in 1.2.22+
 langchain-community>=1.0.0,<2  # lockstep with langchain-core 1.x; CVE-2025-6984 fixed
-langchain-unstructured==0.1.6
+langchain-unstructured>=1.0.1,<2  # lockstep with langchain-core 1.x
 openai-whisper==20250625
 lxml_html_clean>=0.4.0  # CVE-2024-52595 fix: XSS CWE-79 CVSS 8.4
 markdown==3.7
