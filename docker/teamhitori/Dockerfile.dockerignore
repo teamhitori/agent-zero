@@ -28,6 +28,15 @@ DockerfileLocal
 docker-compose*.yml
 docker-compose*.yaml
 
+# Re-include the bits the Pocket Smyth Dockerfile COPYs from.
+# (Order matters — re-includes must come AFTER the broad `docker/` exclude.)
+!docker/run/
+!docker/run/fs/
+!docker/run/fs/**
+!docker/teamhitori/
+!docker/teamhitori/copy_A0.sh
+!docker/teamhitori/install_A0_teamhitori.sh
+
 # ---- Documentation / metadata -------------------------------------
 docs/
 README.md
