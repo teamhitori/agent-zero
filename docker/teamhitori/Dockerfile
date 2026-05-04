@@ -40,16 +40,51 @@ COPY . /source/agent-zero
 # Pre-install (apt update, ssh setup, etc.)
 RUN bash /ins/pre_install.sh
 
+# Trivy flags the system-apt python3-lxml (6.0.2) for CVE-2026-41066 even though
+# the venv installs lxml>=6.1.0. Purge the system copy and any leftover
+# dist-info so the scanner stops seeing the vulnerable metadata.
+RUN apt-get purge -y python3-lxml || true \
+ && apt-get autoremove -y \
+ && rm -rf /var/lib/apt/lists/* \
+ && find /usr/lib/python3*/dist-packages -maxdepth 2 -name 'lxml*.dist-info' -exec rm -rf {} + 2>/dev/null || true
+
+# Pocket Smyth — operator/diagnostic CLIs.
+# Kept in a single RUN with cache cleanup so it doesn't bloat the image,
+# and placed BEFORE the Python install so a deps-resolution failure does
+# not invalidate this layer's cache on subsequent rebuilds.
+RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+        tree \
+        less \
+        vim \
+        nano \
+        htop \
+        procps \
+        net-tools \
+        iputils-ping \
+        dnsutils \
+        tcpdump \
+        lsof \
+        strace \
+        rsync \
+        unzip \
+        zip \
+        ripgrep \
+        bat \
+        fd-find \
+        ncdu \
+        tmux \
+ && rm -rf /var/lib/apt/lists/*
+
 # Install A0 (uses pre-staged /source/agent-zero, no git clone)
 RUN bash /ins/install_A0_teamhitori.sh
 
-# Install additional packages (LibreOffice, Xpra, fonts, ...)
-RUN bash /ins/install_additional.sh
-
-# Strip Xpra's auto-generated dev TLS material — Trivy flags it as a leaked
-# private key (HIGH). Regenerate per-container at runtime if Xpra TLS is
-# actually used; otherwise the absence is harmless.
-RUN rm -f /etc/xpra/ssl/key.pem \
+# Install additional packages (LibreOffice, Xpra, fonts, ...).
+# Strip Xpra's auto-generated dev TLS material in the SAME RUN — Trivy's
+# secret scanner inspects per-layer diffs, so removing the keys in a later
+# layer does not redact them from the layer where they were created.
+# Regenerate per-container at runtime if Xpra TLS is actually used.
+RUN bash /ins/install_additional.sh \
+ && rm -f /etc/xpra/ssl/key.pem \
           /etc/xpra/ssl/ssl-cert.pem \
           /etc/xpra/ssl/ssl-cert.pem.* 2>/dev/null || true
 
