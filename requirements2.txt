@@ -1,4 +1,4 @@
-litellm==1.79.3
+litellm>=1.83.0  # CVE-2026-35030/35029, GHSA-69x8-hrgq-fjj8 (auth bypass, RCE, password hash exposure)
 openai==1.99.5
 # `unstructured` pulls `chardet` without an upper bound, but `requests`
 # warns on import when chardet>=6 is present in the same environment.

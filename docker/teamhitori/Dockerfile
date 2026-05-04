@@ -46,6 +46,13 @@ RUN bash /ins/install_A0_teamhitori.sh
 # Install additional packages (LibreOffice, Xpra, fonts, ...)
 RUN bash /ins/install_additional.sh
 
+# Strip Xpra's auto-generated dev TLS material — Trivy flags it as a leaked
+# private key (HIGH). Regenerate per-container at runtime if Xpra TLS is
+# actually used; otherwise the absence is harmless.
+RUN rm -f /etc/xpra/ssl/key.pem \
+          /etc/xpra/ssl/ssl-cert.pem \
+          /etc/xpra/ssl/ssl-cert.pem.* 2>/dev/null || true
+
 # Cachebuster for downstream layers when explicitly bumped in CI.
 ARG CACHE_DATE=none
 RUN echo "cache buster $CACHE_DATE"
