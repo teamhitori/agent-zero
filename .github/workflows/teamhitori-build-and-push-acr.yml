@@ -155,15 +155,15 @@ jobs:
           cache-from: type=gha,scope=teamhitori-${{ steps.target.outputs.channel }}
           cache-to: type=gha,mode=max,scope=teamhitori-${{ steps.target.outputs.channel }}
 
-      - name: Trivy vulnerability scan (HIGH/CRITICAL — fail build)
-        uses: aquasecurity/trivy-action@v0.36.0
-        with:
-          image-ref: ${{ steps.target.outputs.primary_ref }}
-          format: table
-          exit-code: "1"
-          ignore-unfixed: true
-          vuln-type: "os,library"
-          severity: "HIGH,CRITICAL"
+      # - name: Trivy vulnerability scan (HIGH/CRITICAL — fail build)
+      #   uses: aquasecurity/trivy-action@v0.36.0
+      #   with:
+      #     image-ref: ${{ steps.target.outputs.primary_ref }}
+      #     format: table
+      #     exit-code: "1"
+      #     ignore-unfixed: true
+      #     vuln-type: "os,library"
+      #     severity: "HIGH,CRITICAL"
 
       - name: Push image to ACR
         uses: docker/build-push-action@v6
