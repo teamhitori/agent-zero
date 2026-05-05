@@ -10,7 +10,9 @@ name: Build & Push (ACR — Pocket Smyth)
 #
 # Tag scheme:
 #   <branch-slug>-<run_number>
-#   teamhitori-main also receives `latest` (only when Trivy passes).
+#   Each channel also receives a floating `:latest` tag (only when Trivy passes):
+#     teamhitori-main -> pocket-smyth/agent-zero-prod:latest
+#     feat/**         -> pocket-smyth/agent-zero-dev:latest
 #
 # Auth: Service principal credentials in repo secrets:
 #   AZURE_CLIENT_ID, AZURE_CLIENT_SECRET, AZURE_TENANT_ID, AZURE_SUBSCRIPTION_ID
@@ -182,8 +184,7 @@ jobs:
             CACHE_DATE=${{ github.run_id }}
           cache-from: type=gha,scope=teamhitori-${{ steps.target.outputs.channel }}
 
-      - name: Tag `latest` (teamhitori-main only)
-        if: steps.target.outputs.channel == 'prod'
+      - name: Tag `latest` (per channel)
         run: |
           src="${{ steps.target.outputs.primary_ref }}"
           dst="${{ steps.target.outputs.full_image }}:latest"
