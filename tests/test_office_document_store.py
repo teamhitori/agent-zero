@@ -4,6 +4,7 @@ import asyncio
 import importlib.util
 import json
 import os
+import subprocess
 import sys
 import types
 import zipfile
@@ -72,6 +73,21 @@ def test_document_artifact_create_defaults_to_markdown(office_state):
     assert Path(doc["path"]).read_text(encoding="utf-8").startswith("# Research Note")
 
 
+@pytest.mark.parametrize(
+    ("kind", "title", "fmt", "expected_name"),
+    [
+        ("document", "real-chat-canvas-smoke.md", "md", "real-chat-canvas-smoke.md"),
+        ("document", "Board Memo.ODT", "odt", "Board Memo.odt"),
+        ("spreadsheet", "Budget.ods", "ods", "Budget.ods"),
+        ("presentation", "Roadmap.odp", "odp", "Roadmap.odp"),
+    ],
+)
+def test_create_document_does_not_duplicate_matching_extension(office_state, kind, title, fmt, expected_name):
+    doc = document_store.create_document(kind, title, fmt, content="Smoke")
+
+    assert Path(doc["path"]).name == expected_name
+
+
 def test_explicit_docx_creates_valid_word_package(office_state):
     doc = document_store.create_document("document", "Board Memo", "docx", "A careful memo.")
 
@@ -80,6 +96,23 @@ def test_explicit_docx_creates_valid_word_package(office_state):
     assert libreoffice.validate_docx(doc["path"])["ok"] is True
     with zipfile.ZipFile(doc["path"]) as archive:
         assert "word/document.xml" in archive.namelist()
+
+
+def test_odf_formats_create_valid_libreoffice_packages(office_state):
+    writer = document_store.create_document("document", "Board Memo", "odt", "A careful memo.")
+    sheet = document_store.create_document("spreadsheet", "Budget", "ods", "Name,Amount\nPlatform,1000")
+    deck = document_store.create_document("presentation", "Roadmap", "odp", "Roadmap\nLaunch sequence")
+
+    assert writer["extension"] == "odt"
+    assert sheet["extension"] == "ods"
+    assert deck["extension"] == "odp"
+    assert Path(writer["path"]).parent == office_state.documents
+    assert libreoffice.validate_odf(writer["path"])["ok"] is True
+    assert libreoffice.validate_odf(sheet["path"])["ok"] is True
+    assert libreoffice.validate_odf(deck["path"])["ok"] is True
+    assert artifact_editor.read_artifact(writer)["text"].startswith("Board Memo")
+    assert artifact_editor.read_artifact(sheet)["sheets"][0]["preview_rows"][1][1] == 1000
+    assert artifact_editor.read_artifact(deck)["slides"][0]["title"] == "Roadmap"
 
 
 def test_blank_docx_includes_editable_body_paragraph(office_state):
@@ -93,7 +126,57 @@ def test_blank_docx_includes_editable_body_paragraph(office_state):
     assert 'xml:space="preserve">&#160;</w:t>' in xml
 
 
-def test_xlsx_and_pptx_creation_and_direct_edits_still_work(office_state):
+def test_odf_and_ooxml_creation_and_direct_edits_still_work(office_state):
+    odt = document_store.create_document("document", "Writer Memo", "odt", "Old phrase")
+    updated_odt, odt_payload = artifact_editor.edit_artifact(
+        odt,
+        operation="replace_text",
+        find="Old phrase",
+        replace="New phrase",
+    )
+    odt_read = artifact_editor.read_artifact(updated_odt)
+
+    assert odt_payload["changed"] is True
+    assert "New phrase" in odt_read["text"]
+
+    ods = document_store.create_document(
+        "spreadsheet",
+        "Budget ODS",
+        "ods",
+        "Name,Amount\nPlatform,1000",
+    )
+    updated_ods, ods_payload = artifact_editor.edit_artifact(
+        ods,
+        operation="set_cells",
+        cells={"Sheet1!B2": 12500, "Sheet1!A3": "Research", "Sheet1!B3": 4700},
+    )
+    ods_read = artifact_editor.read_artifact(updated_ods)
+    ods_rows = ods_read["sheets"][0]["preview_rows"]
+
+    assert ods_payload["changed"] is True
+    assert ods_rows[1][1] == 12500
+    assert ods_rows[2][0] == "Research"
+
+    odp = document_store.create_document(
+        "presentation",
+        "Roadmap ODP",
+        "odp",
+        "Roadmap\nLaunch sequence\n\n---\n\nNext\nPolish rollout",
+    )
+    updated_odp, odp_payload = artifact_editor.edit_artifact(
+        odp,
+        operation="set_slides",
+        slides=[
+            {"title": "Now", "bullets": ["Stabilize"]},
+            {"title": "Next", "bullets": ["Polish"]},
+        ],
+    )
+    odp_read = artifact_editor.read_artifact(updated_odp)
+
+    assert odp_payload["changed"] is True
+    assert odp_read["slide_count"] == 2
+    assert odp_read["slides"][1]["title"] == "Next"
+
     sheet = document_store.create_document(
         "spreadsheet",
         "Budget",
@@ -142,7 +225,29 @@ def test_xlsx_and_pptx_creation_and_direct_edits_still_work(office_state):
     assert deck_read["slides"][1]["title"] == "Next"
 
 
-def test_document_artifact_accepts_method_alias_for_xlsx_create(office_state, monkeypatch):
+def test_ods_direct_edit_preserves_rows_beyond_preview_window_and_blank_separators(office_state):
+    rows = [["Row", "Value"], ["alpha", 1], [], ["separator-survives", 2]]
+    rows.extend([[f"item-{index}", index] for index in range(4, 96)])
+    doc = document_store.create_document("spreadsheet", "Long ODS", "ods", "")
+    updated, payload = artifact_editor.edit_artifact(
+        doc,
+        operation="set_rows",
+        rows=rows,
+    )
+    updated, payload = artifact_editor.edit_artifact(
+        updated,
+        operation="set_cells",
+        cells={"Sheet1!B90": 9000},
+    )
+    parsed = artifact_editor._ods_sheets_from_bytes(Path(updated["path"]).read_bytes(), max_rows=120, max_cols=10)
+
+    assert payload["changed"] is True
+    assert parsed[0]["rows"][2] == []
+    assert parsed[0]["rows"][3][0] == "separator-survives"
+    assert parsed[0]["rows"][89][1] == 9000
+
+
+def test_document_artifact_accepts_method_alias_for_ods_create(office_state, monkeypatch):
     tool_module = types.ModuleType("helpers.tool")
 
     class Response:
@@ -185,30 +290,32 @@ def test_document_artifact_accepts_method_alias_for_xlsx_create(office_state, mo
         tool.execute(
             method="create",
             kind="document",
-            title="New Excel Workbook",
-            format="xlsx",
+            title="New Calc Workbook",
+            format="ods",
             content="Sheet1\n",
         )
     )
     payload = json.loads(response.message)
 
     assert payload["action"] == "create"
-    assert payload["document"]["extension"] == "xlsx"
-    assert Path(payload["document"]["path"]).name == "New Excel Workbook.xlsx"
+    assert payload["document"]["extension"] == "ods"
+    assert Path(payload["document"]["path"]).name == "New Calc Workbook.ods"
     assert Path(document_store._path_from_a0(payload["document"]["path"])).exists()
 
 
-def test_odt_is_not_advertised_and_returns_clear_unsupported_response(office_state):
+def test_odf_is_advertised_and_docx_remains_explicit_compatibility(office_state):
     prompt = (PROJECT_ROOT / "plugins" / "_office" / "prompts" / "agent.system.tool.document_artifact.md").read_text(
         encoding="utf-8",
     )
 
-    assert "formats: md docx xlsx pptx" in prompt
+    assert "formats: md odt ods odp docx xlsx pptx" in prompt
+    assert "ODF is first-class for LibreOffice" in prompt
+    assert "DOCX/XLSX/PPTX are compatibility formats" in prompt
     assert "`method` is accepted as an alias for action" in prompt
     assert "they do not open the canvas automatically" in prompt
     assert "Download and Open in canvas message actions" in prompt
-    with pytest.raises(ValueError, match="ODT editing is not supported"):
-        document_store.create_document("document", "Skip ODT", "odt", "")
+    doc = document_store.create_document("document", "Use ODT", "odt", "")
+    assert doc["extension"] == "odt"
 
 
 def test_project_scoped_creation_uses_active_project_root(office_state, monkeypatch):
@@ -224,15 +331,15 @@ def test_project_scoped_creation_uses_active_project_root(office_state, monkeypa
     monkeypatch.setattr(office_state.project_helpers, "get_project_folder", lambda name: str(project_root))
 
     markdown = document_store.create_document("document", "Project Note", "md", "Scoped.", context_id="ctx-project")
-    docx = document_store.create_document("document", "Project Memo", "docx", "Scoped.", context_id="ctx-project")
+    odt = document_store.create_document("document", "Project Memo", "odt", "Scoped.", context_id="ctx-project")
 
     assert Path(markdown["path"]).parent == project_root
-    assert Path(docx["path"]).parent == project_root / "documents"
+    assert Path(odt["path"]).parent == project_root / "documents"
 
 
 def test_non_project_creation_uses_configured_workdir(office_state):
     markdown = document_store.create_document("document", "Workdir Note", content="Plain.")
-    spreadsheet = document_store.create_document("spreadsheet", "Workdir Sheet", "xlsx", "Name,Value")
+    spreadsheet = document_store.create_document("spreadsheet", "Workdir Sheet", "ods", "Name,Value")
 
     assert markdown["extension"] == "md"
     assert Path(markdown["path"]).parent == office_state.workdir
@@ -324,9 +431,9 @@ def test_direct_markdown_edits_refresh_open_canvas_session(office_state, monkeyp
 
 def test_markdown_session_rejects_office_binaries(office_state):
     manager = markdown_sessions.MarkdownSessionManager()
-    doc = document_store.create_document("document", "Desktop Only", "docx", "Native text")
+    doc = document_store.create_document("document", "Desktop Only", "odt", "Native text")
 
-    with pytest.raises(ValueError, match="Open .docx files in the Desktop"):
+    with pytest.raises(ValueError, match="Open .odt files in the Desktop"):
         manager.open(doc)
 
 
@@ -397,6 +504,102 @@ def test_official_libreoffice_desktop_status_and_url_contract(tmp_path, monkeypa
     assert "printing=true" in url
 
 
+def test_office_session_desktop_state_action_defaults_without_screenshot(monkeypatch):
+    api_module = types.ModuleType("helpers.api")
+
+    class ApiHandler:
+        def __init__(self, app=None, thread_lock=None):
+            self.app = app
+            self.thread_lock = thread_lock
+
+    api_module.ApiHandler = ApiHandler
+    api_module.Request = object
+    monkeypatch.setitem(sys.modules, "helpers.api", api_module)
+    monkeypatch.delitem(sys.modules, "plugins._office.api.office_session", raising=False)
+
+    from plugins._office.api import office_session
+
+    calls = []
+
+    class FakeManager:
+        def state(self, *, include_screenshot=False):
+            calls.append(include_screenshot)
+            return {
+                "ok": True,
+                "display": ":120",
+                "profile_dir": "/a0/tmp/_office/desktop/profiles/agent-zero-desktop",
+                "size": {"width": 1440, "height": 900},
+                "pointer": {"x": 0, "y": 0, "screen": 0, "window": 0},
+                "active_window": None,
+                "windows": [],
+                "screenshot": {"ok": False, "path": ""},
+                "capabilities": {},
+                "errors": [],
+            }
+
+    monkeypatch.setattr(office_session.libreoffice_desktop, "get_manager", lambda: FakeManager())
+    handler = office_session.OfficeSession(app=None, thread_lock=None)
+    request = types.SimpleNamespace(headers={}, host_url="http://localhost:32080")
+
+    default_result = asyncio.run(handler.process({"action": "desktop_state"}, request))
+    screenshot_result = asyncio.run(
+        handler.process({"action": "desktop_state", "include_screenshot": True}, request),
+    )
+
+    assert default_result["ok"] is True
+    assert screenshot_result["ok"] is True
+    assert calls == [False, True]
+    monkeypatch.delitem(sys.modules, "plugins._office.api.office_session", raising=False)
+    api_package = sys.modules.get("plugins._office.api")
+    if api_package is not None:
+        monkeypatch.delattr(api_package, "office_session", raising=False)
+
+
+def test_office_session_desktop_shutdown_action_calls_manager(monkeypatch):
+    api_module = types.ModuleType("helpers.api")
+
+    class ApiHandler:
+        def __init__(self, app=None, thread_lock=None):
+            self.app = app
+            self.thread_lock = thread_lock
+
+    api_module.ApiHandler = ApiHandler
+    api_module.Request = object
+    monkeypatch.setitem(sys.modules, "helpers.api", api_module)
+    monkeypatch.delitem(sys.modules, "plugins._office.api.office_session", raising=False)
+
+    from plugins._office.api import office_session
+
+    calls = []
+
+    class FakeManager:
+        def shutdown_system_desktop(self, *, save_first=True, source="api"):
+            calls.append({"save_first": save_first, "source": source})
+            return {
+                "ok": True,
+                "closed": 1,
+                "shutdown": True,
+                "intentional_shutdown": True,
+                "source": source,
+            }
+
+    monkeypatch.setattr(office_session.libreoffice_desktop, "get_manager", lambda: FakeManager())
+    handler = office_session.OfficeSession(app=None, thread_lock=None)
+    request = types.SimpleNamespace(headers={}, host_url="http://localhost:32080")
+
+    result = asyncio.run(
+        handler.process({"action": "desktop_shutdown", "save_first": False, "source": "ui"}, request),
+    )
+
+    assert result["ok"] is True
+    assert result["intentional_shutdown"] is True
+    assert calls == [{"save_first": False, "source": "ui"}]
+    monkeypatch.delitem(sys.modules, "plugins._office.api.office_session", raising=False)
+    api_package = sys.modules.get("plugins._office.api")
+    if api_package is not None:
+        monkeypatch.delattr(api_package, "office_session", raising=False)
+
+
 def test_official_libreoffice_desktop_manager_opens_binary_session(office_state, tmp_path, monkeypatch):
     class FakeProcess:
         pid = 4242
@@ -439,12 +642,12 @@ def test_official_libreoffice_desktop_manager_opens_binary_session(office_state,
     monkeypatch.setattr(libreoffice_desktop.LibreOfficeDesktopManager, "_spawn_desktop_locked", fake_spawn)
     monkeypatch.setattr(libreoffice_desktop.LibreOfficeDesktopManager, "_open_document_locked", fake_open_document)
 
-    doc = document_store.create_document("spreadsheet", "Official Sheet", "xlsx", "Name,Value\nA,1")
+    doc = document_store.create_document("spreadsheet", "Official Sheet", "ods", "Name,Value\nA,1")
     manager = libreoffice_desktop.LibreOfficeDesktopManager()
     payload = manager.open(doc)
 
     assert payload["available"] is True
-    assert payload["extension"] == "xlsx"
+    assert payload["extension"] == "ods"
     assert payload["url"].startswith("/desktop/session/")
     registry = tmp_path / "desktop" / "profiles" / payload["session_id"] / "user" / "registrymodifications.xcu"
     registry_text = registry.read_text(encoding="utf-8")
@@ -463,10 +666,13 @@ def test_official_libreoffice_desktop_manager_opens_binary_session(office_state,
     settings_launcher = tmp_path / "desktop" / "profiles" / payload["session_id"] / "Desktop" / "Settings.desktop"
     terminal_text = terminal_launcher.read_text(encoding="utf-8")
     settings_text = settings_launcher.read_text(encoding="utf-8")
+    browser_launcher = tmp_path / "desktop" / "profiles" / payload["session_id"] / "Desktop" / "Browser.desktop"
+    browser_text = browser_launcher.read_text(encoding="utf-8")
     assert "xfce4-terminal" in terminal_text
     assert "org.xfce.terminal" in terminal_text
     assert not files_launcher.exists()
-    assert not (tmp_path / "desktop" / "profiles" / payload["session_id"] / "Desktop" / "Browser.desktop").exists()
+    assert "open-url" in browser_text
+    assert "firefox" not in browser_text.lower()
     assert "xfce4-settings-manager" in settings_text
     assert "org.xfce.settings.manager" in settings_text
     link_targets = {
@@ -544,7 +750,47 @@ def test_official_libreoffice_desktop_manager_opens_binary_session(office_state,
     ).read_text(encoding="utf-8")
     assert "panel-1" in panel_profile
     assert "panel-2" not in panel_profile
-    assert "launcher" not in panel_profile
+    assert 'value="actions"' not in panel_profile
+    assert 'value="launcher"' in panel_profile
+    assert "agent-zero-shutdown.desktop" in panel_profile
+    shutdown_app = (
+        tmp_path
+        / "desktop"
+        / "profiles"
+        / payload["session_id"]
+        / ".local"
+        / "share"
+        / "applications"
+        / "agent-zero-shutdown.desktop"
+    ).read_text(encoding="utf-8")
+    assert "Shutdown Desktop" in shutdown_app
+    assert "shutdown-desktop" in shutdown_app
+    shutdown_panel_launcher = (
+        tmp_path
+        / "desktop"
+        / "profiles"
+        / payload["session_id"]
+        / ".config"
+        / "xfce4"
+        / "panel"
+        / "launcher-9"
+        / "agent-zero-shutdown.desktop"
+    ).read_text(encoding="utf-8")
+    assert "Shutdown Desktop" in shutdown_panel_launcher
+    assert "shutdown-desktop" in shutdown_panel_launcher
+    shutdown_script = (
+        tmp_path
+        / "desktop"
+        / "profiles"
+        / payload["session_id"]
+        / ".agent-zero"
+        / "shutdown-desktop"
+    ).read_text(encoding="utf-8")
+    assert "CONFIRM_SECONDS" in shutdown_script
+    assert "ARM_PATH" in shutdown_script
+    assert "Click Shutdown Desktop again" in shutdown_script
+    assert "xmessage" in shutdown_script
+    assert '"-buttons",' in shutdown_script
     desktop_helper = (
         PROJECT_ROOT / "plugins" / "_office" / "helpers" / "libreoffice_desktop.py"
     ).read_text(encoding="utf-8")
@@ -571,11 +817,17 @@ def test_official_libreoffice_desktop_manager_opens_binary_session(office_state,
     assert "agent-zero-settings.desktop" not in profile_script
     assert "metadata::xfce-exe-checksum" in profile_script
     assert "xfconf-query -c thunar -p /last-show-hidden" in profile_script
+    assert "xfconf-query -c xfce4-panel" not in profile_script
+    assert "launcher-*" not in profile_script
     for filename in (
         "exo-mail-reader.desktop",
         "exo-web-browser.desktop",
         "xfce4-mail-reader.desktop",
         "xfce4-web-browser.desktop",
+        "xfce4-session-logout.desktop",
+        "xfce4-lock-screen.desktop",
+        "xflock4.desktop",
+        "xfce4-switch-user.desktop",
     ):
         entry = (
             tmp_path
@@ -592,6 +844,106 @@ def test_official_libreoffice_desktop_manager_opens_binary_session(office_state,
     assert manager.proxy_for_token(payload["token"]) == ("127.0.0.1", libreoffice_desktop.XPRA_PORT_BASE)
     assert manager.close(payload["session_id"], save_first=False)["closed"] == 0
     assert manager.close(payload["session_id"], save_first=False)["persistent"] is True
+
+
+def test_shutdown_panel_launcher_requires_second_click(tmp_path):
+    profile_dir = tmp_path / "desktop" / "profiles" / libreoffice_desktop.SYSTEM_SESSION_ID
+    profile_dir.mkdir(parents=True)
+    desktop_path = tmp_path / "workdir"
+    desktop_path.mkdir()
+    session = libreoffice_desktop.DesktopSession(
+        session_id=libreoffice_desktop.SYSTEM_SESSION_ID,
+        file_id=libreoffice_desktop.SYSTEM_FILE_ID,
+        extension="desktop",
+        path=str(desktop_path),
+        title=libreoffice_desktop.SYSTEM_TITLE,
+        display=libreoffice_desktop.DISPLAY_BASE,
+        xpra_port=libreoffice_desktop.XPRA_PORT_BASE,
+        token=libreoffice_desktop.SYSTEM_SESSION_ID,
+        url="/desktop/session/agent-zero-desktop/index.html",
+        profile_dir=profile_dir,
+    )
+    script = libreoffice_desktop._write_shutdown_bridge_script(session)
+    request = libreoffice_desktop._shutdown_request_path(session)
+    arm = libreoffice_desktop._shutdown_arm_path(session)
+    env = dict(os.environ)
+    env.pop("DISPLAY", None)
+
+    subprocess.run([sys.executable, str(script)], check=True, env=env)
+
+    assert arm.exists()
+    assert not request.exists()
+
+    subprocess.run([sys.executable, str(script)], check=True, env=env)
+
+    payload = json.loads(request.read_text(encoding="utf-8"))
+    assert payload["source"] == "tray"
+    assert payload["armed_at"] <= payload["created_at"]
+    assert not arm.exists()
+
+
+def test_libreoffice_desktop_sync_consumes_shutdown_marker(tmp_path, monkeypatch):
+    class FakeProcess:
+        pid = 5252
+        terminated = False
+
+        def poll(self):
+            return None if not self.terminated else 0
+
+        def terminate(self):
+            self.terminated = True
+
+        def wait(self, timeout=None):
+            self.terminated = True
+            return 0
+
+        def kill(self):
+            self.terminated = True
+
+    monkeypatch.setattr(libreoffice_desktop, "STATE_DIR", tmp_path / "desktop")
+    monkeypatch.setattr(libreoffice_desktop, "SESSION_DIR", tmp_path / "desktop" / "sessions")
+    monkeypatch.setattr(libreoffice_desktop, "PROFILE_DIR", tmp_path / "desktop" / "profiles")
+
+    profile_dir = tmp_path / "desktop" / "profiles" / libreoffice_desktop.SYSTEM_SESSION_ID
+    profile_dir.mkdir(parents=True)
+    desktop_path = tmp_path / "workdir"
+    desktop_path.mkdir()
+    session = libreoffice_desktop.DesktopSession(
+        session_id=libreoffice_desktop.SYSTEM_SESSION_ID,
+        file_id=libreoffice_desktop.SYSTEM_FILE_ID,
+        extension="desktop",
+        path=str(desktop_path),
+        title=libreoffice_desktop.SYSTEM_TITLE,
+        display=libreoffice_desktop.DISPLAY_BASE,
+        xpra_port=libreoffice_desktop.XPRA_PORT_BASE,
+        token=libreoffice_desktop.SYSTEM_SESSION_ID,
+        url="/desktop/session/agent-zero-desktop/index.html",
+        profile_dir=profile_dir,
+        processes={"xpra": FakeProcess()},
+    )
+    manager = libreoffice_desktop.LibreOfficeDesktopManager()
+    manager._sessions[session.session_id] = session
+    manager._write_manifest(session)
+    libreoffice_desktop._write_url_bridge_script(session)
+    shutdown_request = libreoffice_desktop._shutdown_request_path(session)
+    shutdown_request.write_text('{"source": "tray", "created_at": 123.0}\n', encoding="utf-8")
+    save_calls = []
+    monkeypatch.setattr(
+        manager,
+        "save",
+        lambda session_id, file_id="": save_calls.append((session_id, file_id)) or {"ok": True},
+    )
+
+    result = manager.sync(session_id=session.session_id)
+
+    assert result["ok"] is True
+    assert result["intentional_shutdown"] is True
+    assert result["source"] == "tray"
+    assert result["closed"] == 1
+    assert save_calls == [(libreoffice_desktop.SYSTEM_SESSION_ID, "")]
+    assert not shutdown_request.exists()
+    assert not (libreoffice_desktop.SESSION_DIR / f"{session.session_id}.json").exists()
+    assert manager.get(session.session_id) is None
 
 
 def test_libreoffice_desktop_cleanup_preserves_live_owner_manifest(tmp_path, monkeypatch):
@@ -686,6 +1038,8 @@ def test_cleanup_hook_removes_stale_runtime_state_idempotently(tmp_path, monkeyp
 
 def test_office_startup_defers_persistent_desktop_runtime(monkeypatch):
     calls = []
+    cleanup_calls = []
+    started_threads = []
     routes_module = types.ModuleType("plugins._office.helpers.libreoffice_desktop_routes")
     routes_module.install_route_hooks = lambda: calls.append("routes")
     monkeypatch.setitem(sys.modules, "plugins._office.helpers.libreoffice_desktop_routes", routes_module)
@@ -700,13 +1054,34 @@ def test_office_startup_defers_persistent_desktop_runtime(monkeypatch):
     monkeypatch.setattr(
         office_startup.hooks,
         "cleanup_stale_runtime_state",
-        lambda: {"ok": True, "errors": [], "installed": [], "removed": []},
+        lambda: cleanup_calls.append("cleanup") or {"ok": True, "errors": [], "installed": [], "removed": []},
     )
+
+    class FakeThread:
+        def __init__(self, *, target, name, daemon):
+            self.target = target
+            self.name = name
+            self.daemon = daemon
+
+        def is_alive(self):
+            return False
+
+        def start(self):
+            started_threads.append(self)
+
+    monkeypatch.setattr(office_startup.threading, "Thread", FakeThread)
 
     office_startup.OfficeStartupCleanup(agent=None).execute()
 
     assert calls == ["routes"]
+    assert cleanup_calls == []
+    assert len(started_threads) == 1
+    assert started_threads[0].name == "a0-office-runtime-preparation"
+    assert started_threads[0].daemon is True
     assert not hasattr(office_startup, "libreoffice_desktop")
+
+    started_threads[0].target()
+    assert cleanup_calls == ["cleanup"]
 
 
 def test_cleanup_hook_reruns_when_stale_packages_exist_after_old_marker(tmp_path, monkeypatch):

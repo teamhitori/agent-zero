@@ -19,6 +19,7 @@ const SYSTEM_DESKTOP_FILE_ID = "system-desktop";
 const BROWSER_MODAL_PATH = "/plugins/_browser/webui/main.html";
 const OFFICE_MODAL_PATH = "/plugins/_office/webui/main.html";
 const URL_INTENT_PANEL_TIMEOUT_MS = 5000;
+const DESKTOP_SHUTDOWN_STORAGE_KEY = "a0.office.desktopShutdown";
 const MAX_HISTORY = 80;
 
 function currentContextId() {
@@ -228,13 +229,23 @@ const model = {
   _desktopPrimeTimer: null,
   _desktopPrimeAttempts: 0,
   _desktopKeyboardActive: false,
+  _desktopFocusInProgress: false,
+  _desktopBridgeReady: false,
+  _desktopKeyboardCaptureState: { ready: false, active: false, capture: false, focused: false },
+  _desktopLastState: null,
   _desktopKeyboardCleanup: null,
   _desktopClipboardCleanup: null,
   _desktopStarting: null,
   _desktopUrlIntentBusy: false,
   _desktopUrlIntentQueue: [],
+  _desktopFrame: null,
+  _desktopFrameHost: null,
+  _desktopFrameLoadHandler: null,
+  _desktopKeepaliveHost: null,
+  _desktopIntentionalShutdown: false,
 
   async init(element = null) {
+    this.restoreDesktopShutdownState();
     return await this.onMount(element, { mode: "canvas" });
   },
 
@@ -251,12 +262,20 @@ const model = {
   },
 
   async onOpen(payload = {}) {
+    this.restoreDesktopShutdownState();
     await this.refresh();
     if (payload?.path || payload?.file_id) {
       await this.openSession({
         path: payload.path || "",
         file_id: payload.file_id || "",
+        refresh: payload.refresh === true,
+        source: payload.source || "",
       });
+    } else if (this._desktopIntentionalShutdown) {
+      this.session = null;
+      this.activeTabId = "";
+      this.editorText = "";
+      this.dirty = false;
     } else {
       await this.ensureDesktopSession({ select: !this.session });
     }
@@ -268,6 +287,9 @@ const model = {
     this._desktopHostVisible = false;
     this.flushInput();
     this.clearDesktopViewportSyncTimers();
+    this.stopDesktopMonitor();
+    this.stopDesktopKeyboardBridge();
+    this.stopDesktopClipboardBridge();
     this.unloadDesktopFrames();
   },
 
@@ -279,6 +301,7 @@ const model = {
     this.stopXpraDesktopPrime();
     this.stopDesktopKeyboardBridge();
     this.stopDesktopClipboardBridge();
+    if (!this._desktopIntentionalShutdown) this.moveDesktopFrameToKeepalive();
     this._floatingCleanup?.();
     this._floatingCleanup = null;
     if (this._mode === "modal") this._root = null;
@@ -294,7 +317,110 @@ const model = {
     }
   },
 
+  restoreDesktopShutdownState() {
+    try {
+      this._desktopIntentionalShutdown = localStorage.getItem(DESKTOP_SHUTDOWN_STORAGE_KEY) === "1";
+    } catch {
+      this._desktopIntentionalShutdown = Boolean(this._desktopIntentionalShutdown);
+    }
+  },
+
+  persistDesktopShutdownState() {
+    try {
+      if (this._desktopIntentionalShutdown) {
+        localStorage.setItem(DESKTOP_SHUTDOWN_STORAGE_KEY, "1");
+      } else {
+        localStorage.removeItem(DESKTOP_SHUTDOWN_STORAGE_KEY);
+      }
+    } catch {
+      // Shutdown state is still correct for this page even without storage.
+    }
+  },
+
+  setDesktopIntentionalShutdown(value) {
+    this._desktopIntentionalShutdown = Boolean(value);
+    this.persistDesktopShutdownState();
+  },
+
+  isDesktopShutdown() {
+    return Boolean(this._desktopIntentionalShutdown);
+  },
+
+  shouldShowDesktopEmptyState() {
+    return Boolean(this._desktopIntentionalShutdown && !this.session);
+  },
+
+  async restartDesktopSession() {
+    this.error = "";
+    const session = await this.ensureDesktopSession({
+      force: true,
+      restart: true,
+      select: true,
+      message: "Restarting Agent Zero Desktop environment",
+    });
+    if (!session) {
+      this.setDesktopIntentionalShutdown(true);
+      return null;
+    }
+    this.restoreDesktopFrames();
+    this.requestDesktopViewportSync({ force: true });
+    return session;
+  },
+
+  async shutdownDesktop(options = {}) {
+    this.loading = options.progress !== false;
+    this.message = this.loading ? "Shutting down Desktop" : this.message;
+    this.error = "";
+    try {
+      const response = await callOffice("desktop_shutdown", {
+        save_first: options.saveFirst !== false,
+        source: options.source || "ui",
+      });
+      await this.handleIntentionalDesktopShutdown(response);
+      return response;
+    } catch (error) {
+      this.error = error instanceof Error ? error.message : String(error);
+      return null;
+    } finally {
+      if (options.progress !== false) {
+        this.loading = false;
+        if (this.message === "Shutting down Desktop") this.message = "";
+      }
+    }
+  },
+
+  async handleIntentionalDesktopShutdown(response = {}) {
+    this.setDesktopIntentionalShutdown(true);
+    this.stopDesktopMonitor();
+    this.stopDesktopResizeObserver();
+    this.clearDesktopViewportSyncTimers();
+    this.stopXpraDesktopPrime();
+    this.stopDesktopKeyboardBridge();
+    this.stopDesktopClipboardBridge();
+    this.destroyDesktopFrame();
+    const activeTabId = this.activeTabId;
+    this.tabs = this.tabs.filter((tab) => !this.isDesktopSession(tab) && !this.hasOfficialOffice(tab));
+    if (!this.tabs.some((tab) => tab.tab_id === activeTabId)) {
+      this.session = null;
+      this.activeTabId = "";
+      this.editorText = "";
+      this.dirty = false;
+      this.resetHistory("");
+    }
+    this._desktopStarting = null;
+    this._desktopHeartbeatMisses = 0;
+    this.message = response?.source === "tray" ? "Desktop shut down from system tray" : "Desktop is shut down";
+    await this.refresh();
+  },
+
   async ensureDesktopSession(options = {}) {
+    if (this._desktopIntentionalShutdown && options.restart !== true) {
+      return null;
+    }
+    if (options.restart === true) {
+      this.setDesktopIntentionalShutdown(false);
+      this.destroyDesktopFrame();
+    }
     const existing = this.tabs.find((tab) => this.isDesktopSession(tab));
     if (existing && !options.force) {
       if (options.select) this.selectTab(existing.tab_id, { focus: false });
@@ -320,6 +446,7 @@ const model = {
         }
         const response = await callOffice("desktop");
         if (response?.ok === false) throw new Error(response.error || "Desktop session could not be opened.");
+        this.setDesktopIntentionalShutdown(false);
         const session = normalizeSession(response);
         const existingIndex = this.tabs.findIndex((tab) => this.isDesktopSession(tab));
         let desktopTabId = session.tab_id;
@@ -344,6 +471,7 @@ const model = {
         } else {
           this.updateDesktopMonitor();
         }
+        this.restoreDesktopFrames();
         return { ...session, tab_id: desktopTabId };
       } catch (error) {
         this.error = error instanceof Error ? error.message : String(error);
@@ -360,7 +488,7 @@ const model = {
   },
 
   async create(kind = "document", format = "") {
-    const fmt = String(format || (kind === "spreadsheet" ? "xlsx" : kind === "presentation" ? "pptx" : "md")).toLowerCase();
+    const fmt = String(format || (kind === "spreadsheet" ? "ods" : kind === "presentation" ? "odp" : "md")).toLowerCase();
     const title = this.defaultTitle(kind, fmt);
     await this.openSession({
       action: "create",
@@ -431,7 +559,8 @@ const model = {
   },
 
   installDesktopDocumentSession(session) {
-    this.tabs = this.tabs.filter((tab) => this.isVisibleOfficeTab(tab));
+    this.setDesktopIntentionalShutdown(false);
+    this.tabs = this.tabs.filter((tab) => !this.isDesktopOfficeDocument(tab));
     let desktopTab = this.tabs.find((tab) => this.isDesktopSession(tab));
     if (!desktopTab) {
       desktopTab = {
@@ -453,24 +582,42 @@ const model = {
       };
       this.tabs.unshift(desktopTab);
     }
-    const desktopTabId = desktopTab.tab_id;
-    this.session = { ...session, tab_id: session.tab_id || uniqueTabId(session) };
-    this.activeTabId = desktopTabId;
+    const documentSession = { ...session, tab_id: session.tab_id || uniqueTabId(session) };
+    const existingIndex = this.tabs.findIndex((tab) => (
+      (documentSession.file_id && tab.file_id === documentSession.file_id)
+      || (documentSession.path && tab.path === documentSession.path)
+    ));
+    if (existingIndex >= 0) {
+      this.tabs.splice(existingIndex, 1, documentSession);
+    } else {
+      this.tabs.push(documentSession);
+    }
+    this.session = documentSession;
+    this.activeTabId = documentSession.tab_id;
     this.editorText = "";
     this.dirty = false;
     this.resetHistory("");
     this.queueRender({ focus: true });
+    this.restoreDesktopFrames();
+    this.requestDesktopViewportSync({ force: true });
     this.updateDesktopMonitor();
   },
 
   selectTab(tabId, options = {}) {
     const tab = this.tabs.find((item) => item.tab_id === tabId) || this.tabs[0] || null;
+    if (this.hasOfficialOffice(this.session) && !this.hasOfficialOffice(tab)) {
+      this.moveDesktopFrameToKeepalive();
+    }
     this.session = tab;
     this.activeTabId = tab?.tab_id || "";
     this.editorText = String(tab?.text || "");
     this.dirty = Boolean(tab?.dirty);
     this.resetHistory(this.editorText);
     this.queueRender({ focus: Boolean(tab) && options.focus !== false });
+    if (this.hasOfficialOffice(tab)) {
+      this.restoreDesktopFrames();
+      this.requestDesktopViewportSync({ force: true });
+    }
     this.updateDesktopMonitor();
   },
 
@@ -521,6 +668,11 @@ const model = {
     this.updateDesktopMonitor();
     this.ensureActiveTab();
     await this.refresh();
+  },
+
+  async closeActiveFile() {
+    if (!this.session || this.isDesktopSession() || this.loading) return;
+    await this.closeTab(this.session.tab_id);
   },
 
   async save() {
@@ -666,7 +818,7 @@ const model = {
   replaceSession(previous, next) {
     this.session = next;
     const index = this.tabs.findIndex((tab) => tab.tab_id === (previous?.tab_id || next.tab_id));
-    if (index >= 0 && this.isVisibleOfficeTab(next)) this.tabs.splice(index, 1, next);
+    if (index >= 0) this.tabs.splice(index, 1, next);
     this.queueRender();
     this.updateDesktopMonitor();
   },
@@ -831,7 +983,7 @@ const model = {
 
   isBinaryOffice(tab = this.session) {
     const ext = String(tab?.extension || tab?.document?.extension || "").toLowerCase();
-    return ext === "docx" || ext === "xlsx" || ext === "pptx";
+    return ["odt", "ods", "odp", "docx", "xlsx", "pptx"].includes(ext);
   },
 
   hasOfficialOffice(tab = this.session) {
@@ -853,8 +1005,12 @@ const model = {
     return Boolean(tab && this.hasOfficialOffice(tab) && !this.isDesktopSession(tab) && this.isBinaryOffice(tab));
   },
 
+  hasActiveFile(tab = this.session) {
+    return Boolean(tab && !this.isDesktopSession(tab) && (this.isMarkdown(tab) || this.isDesktopOfficeDocument(tab)));
+  },
+
   isVisibleOfficeTab(tab = {}) {
-    return Boolean(this.isDesktopSession(tab) || this.isMarkdown(tab));
+    return Boolean(this.hasActiveFile(tab));
   },
 
   visibleTabs() {
@@ -878,8 +1034,8 @@ const model = {
 
   isDesktopHostVisible() {
     if (this._mode === "modal") return true;
-    const canvas = globalThis.Alpine?.store?.("rightCanvas") || rightCanvasStore;
-    return Boolean(canvas?.isOpen && canvas.activeSurfaceId === "office");
+    const canvas = rightCanvasStore;
+    return Boolean(canvas?.isOpen && (canvas.isSurfaceMounted?.("office") ?? canvas.activeSurfaceId === "office"));
   },
 
   setDesktopHostVisible(visible) {
@@ -895,9 +1051,11 @@ const model = {
   },
 
   desktopFrames() {
-    const frames = Array.from(document.querySelectorAll("[data-office-desktop-frame]"));
-    const rootFrame = this._root?.querySelector?.("[data-office-desktop-frame]");
-    if (rootFrame && !frames.includes(rootFrame)) frames.push(rootFrame);
+    const frames = [];
+    if (this._desktopFrame) frames.push(this._desktopFrame);
+    for (const frame of Array.from(document.querySelectorAll("[data-office-desktop-frame]"))) {
+      if (!frames.includes(frame)) frames.push(frame);
+    }
     return frames;
   },
 
@@ -921,29 +1079,149 @@ const model = {
       })[0] || null;
   },
 
+  isUsableDesktopHost(host) {
+    if (!host?.appendChild) return false;
+    const rect = host.getBoundingClientRect?.();
+    return Boolean(rect && rect.width >= 120 && rect.height >= 80);
+  },
+
+  desktopHost(preferred = null) {
+    if (preferred?.matches?.("[data-office-desktop-host]")) return preferred;
+    const rootHost = this._root?.querySelector?.("[data-office-desktop-host]");
+    if (this.isUsableDesktopHost(rootHost)) return rootHost;
+    const hosts = Array.from(document.querySelectorAll("[data-office-desktop-host]"));
+    return hosts
+      .filter((host) => this.isUsableDesktopHost(host))
+      .sort((left, right) => {
+        const leftRect = left.getBoundingClientRect();
+        const rightRect = right.getBoundingClientRect();
+        return (rightRect.width * rightRect.height) - (leftRect.width * leftRect.height);
+      })[0] || rootHost || hosts[0] || null;
+  },
+
+  ensureDesktopKeepaliveHost() {
+    if (this._desktopKeepaliveHost?.isConnected) return this._desktopKeepaliveHost;
+    const host = document.createElement("div");
+    host.className = "office-desktop-keepalive";
+    host.dataset.officeDesktopKeepalive = "true";
+    Object.assign(host.style, {
+      position: "fixed",
+      left: "-10000px",
+      top: "-10000px",
+      width: "720px",
+      height: "480px",
+      overflow: "hidden",
+      pointerEvents: "none",
+      visibility: "hidden",
+    });
+    document.body?.appendChild(host);
+    this._desktopKeepaliveHost = host;
+    return host;
+  },
+
+  rememberDesktopFrameSize() {
+    const frame = this._desktopFrame;
+    const rect = frame?.getBoundingClientRect?.();
+    const hostRect = this._desktopFrameHost?.getBoundingClientRect?.();
+    const width = Math.round(rect?.width || hostRect?.width || 720);
+    const height = Math.round(rect?.height || hostRect?.height || 480);
+    const keepalive = this.ensureDesktopKeepaliveHost();
+    keepalive.style.width = `${Math.max(320, width)}px`;
+    keepalive.style.height = `${Math.max(220, height)}px`;
+    return keepalive;
+  },
+
+  ensureDesktopFrame() {
+    if (this._desktopFrame) return this._desktopFrame;
+    const frame = document.createElement("iframe");
+    frame.className = "office-desktop-frame";
+    frame.dataset.officeDesktopFrame = "true";
+    frame.dataset.officePersistentDesktopFrame = "true";
+    frame.setAttribute("tabindex", "0");
+    frame.setAttribute("aria-label", "Desktop");
+    frame.setAttribute("allow", "clipboard-read; clipboard-write; autoplay");
+    this._desktopFrameLoadHandler = (event) => this.onDesktopFrameLoaded(event);
+    frame.addEventListener("load", this._desktopFrameLoadHandler);
+    this._desktopFrame = frame;
+    return frame;
+  },
+
+  desktopFrameSrcMatches(frame, url) {
+    const current = frame?.getAttribute?.("src") || frame?.src || "";
+    if (!current && !url) return true;
+    try {
+      return new URL(current, window.location.href).href === new URL(url, window.location.href).href;
+    } catch {
+      return current === url;
+    }
+  },
+
+  attachDesktopFrame(host = null) {
+    if (!this.hasOfficialOffice()) return false;
+    const target = this.desktopHost(host);
+    if (!target) return false;
+    const frame = this.ensureDesktopFrame();
+    if (frame.parentElement !== target) {
+      frame.parentElement?.removeAttribute?.("data-office-desktop-attached");
+      target.appendChild(frame);
+    }
+    target.dataset.officeDesktopAttached = "true";
+    if (this._desktopFrameHost !== target) this._desktopFrameHost = target;
+    const url = this.officialOfficeUrl();
+    if (url && !this.desktopFrameSrcMatches(frame, url)) {
+      frame.setAttribute("src", url);
+    }
+    return true;
+  },
+
+  mountDesktopFrameHost(host = null) {
+    const attached = this.attachDesktopFrame(host);
+    if (attached && this.isDesktopHostVisible()) {
+      this.requestDesktopViewportSync({ force: true, frame: this._desktopFrame, followup: true });
+    }
+    return attached;
+  },
+
+  moveDesktopFrameToKeepalive() {
+    const frame = this._desktopFrame;
+    if (!frame) return false;
+    const keepalive = this.rememberDesktopFrameSize();
+    if (frame.parentElement !== keepalive) {
+      frame.parentElement?.removeAttribute?.("data-office-desktop-attached");
+      keepalive.appendChild(frame);
+    }
+    this._desktopFrameHost = keepalive;
+    this._desktopKeyboardActive = false;
+    this.updateDesktopKeyboardCaptureState(frame);
+    return true;
+  },
+
+  destroyDesktopFrame() {
+    const frame = this._desktopFrame;
+    if (!frame) return;
+    if (this._desktopFrameLoadHandler) {
+      frame.removeEventListener("load", this._desktopFrameLoadHandler);
+    }
+    frame.setAttribute("src", "about:blank");
+    frame.remove();
+    this._desktopFrame = null;
+    this._desktopFrameHost = null;
+    this._desktopFrameLoadHandler = null;
+    this._desktopBridgeReady = false;
+    this.updateDesktopKeyboardCaptureState();
+    this._desktopKeepaliveHost?.remove?.();
+    this._desktopKeepaliveHost = null;
+  },
+
   unloadDesktopFrames() {
     this.stopDesktopResizeObserver();
     this.stopXpraDesktopPrime();
-    for (const frame of this.desktopFrames()) {
-      if (!frame?.getAttribute) continue;
-      const current = frame.getAttribute("src") || "";
-      if (!current || current === "about:blank") continue;
-      frame.dataset.officeDesktopUnloaded = "true";
-      frame.setAttribute("src", "about:blank");
-    }
+    this.moveDesktopFrameToKeepalive();
   },
 
   restoreDesktopFrames() {
     if (!this.isDesktopHostVisible()) return;
-    const url = this.officialOfficeUrl();
-    if (!url) return;
-    for (const frame of this.desktopFrames()) {
-      if (!frame?.getAttribute) continue;
-      const current = frame.getAttribute("src") || "";
-      if (current && current !== "about:blank" && frame.dataset.officeDesktopUnloaded !== "true") continue;
-      delete frame.dataset.officeDesktopUnloaded;
-      frame.setAttribute("src", url);
-    }
+    this.attachDesktopFrame();
   },
 
   afterDesktopHostShown() {
@@ -992,9 +1270,11 @@ const model = {
   },
 
   focusDesktopFrame(frame = null, options = {}) {
+    if (this._desktopFocusInProgress) return false;
     const target = this.desktopFrame(frame);
     if (!target) return false;
     if (options.arm !== false) this._desktopKeyboardActive = true;
+    this._desktopFocusInProgress = true;
     try {
       target.setAttribute("tabindex", "0");
       target.focus?.({ preventScroll: true });
@@ -1006,8 +1286,12 @@ const model = {
       if (target.contentWindow?.client) target.contentWindow.client.capture_keyboard = true;
     } catch {
       target.focus?.({ preventScroll: true });
+    } finally {
+      this._desktopFocusInProgress = false;
     }
-    return Boolean(document.activeElement === target || target.contentDocument?.hasFocus?.());
+    const focused = Boolean(document.activeElement === target || target.contentDocument?.hasFocus?.());
+    this.updateDesktopKeyboardCaptureState(target);
+    return focused;
   },
 
   updateDesktopMonitor() {
@@ -1015,6 +1299,8 @@ const model = {
       this.stopDesktopMonitor();
       this.stopDesktopResizeObserver();
       this._desktopKeyboardActive = false;
+      this._desktopBridgeReady = false;
+      this.updateDesktopKeyboardCaptureState();
       return;
     }
     const sessionId = this.session?.desktop_session_id || this.session?.session_id || "";
@@ -1216,11 +1502,100 @@ const model = {
         this.installXpraDesktopWheelBridge(remoteWindow, xpraWindow);
         if (requestRefresh && xpraWindow.wid != null) client.request_refresh?.(xpraWindow.wid);
       }
+      this.installXpraDesktopAgentBridge(frame, remoteWindow, remoteDocument, client, container);
       return true;
     } catch (error) {
       console.warn("Xpra desktop viewport prime skipped", error);
       return false;
     }
+  },
+
+  installXpraDesktopAgentBridge(frame, remoteWindow, remoteDocument, client, container) {
+    if (!frame || !remoteWindow || !remoteDocument || !client) return null;
+    const store = this;
+    const finite = (value, fallback = 0) => {
+      const number = Number(value);
+      return Number.isFinite(number) ? number : fallback;
+    };
+    const metrics = () => {
+      const desktopWidth = Math.max(1, finite(client.desktop_width || container?.clientWidth || remoteWindow.innerWidth, 1));
+      const desktopHeight = Math.max(1, finite(client.desktop_height || container?.clientHeight || remoteWindow.innerHeight, 1));
+      const clientWidth = Math.max(1, finite(container?.clientWidth || remoteWindow.innerWidth, desktopWidth));
+      const clientHeight = Math.max(1, finite(container?.clientHeight || remoteWindow.innerHeight, desktopHeight));
+      return {
+        desktopWidth,
+        desktopHeight,
+        clientWidth,
+        clientHeight,
+        scaleX: clientWidth / desktopWidth,
+        scaleY: clientHeight / desktopHeight,
+      };
+    };
+    const bridge = frame.__agentZeroDesktopBridge || {};
+    Object.assign(bridge, {
+      ready: true,
+      state: async (options = {}) => {
+        const result = await callOffice("desktop_state", {
+          include_screenshot: options.includeScreenshot === true || options.include_screenshot === true,
+        });
+        store._desktopLastState = result;
+        return result;
+      },
+      focus: (options = {}) => store.focusDesktopFrame(frame, { ...options, arm: options.arm !== false }),
+      requestRefresh: () => {
+        for (const xpraWindow of Object.values(client.id_to_window || {})) {
+          if (xpraWindow?.wid != null) client.request_refresh?.(xpraWindow.wid);
+        }
+        return true;
+      },
+      desktopToClient: (x, y) => {
+        const value = metrics();
+        return {
+          x: Math.round(finite(x) * value.scaleX),
+          y: Math.round(finite(y) * value.scaleY),
+          scale_x: value.scaleX,
+          scale_y: value.scaleY,
+        };
+      },
+      clientToDesktop: (x, y) => {
+        const value = metrics();
+        return {
+          x: Math.round(finite(x) / value.scaleX),
+          y: Math.round(finite(y) / value.scaleY),
+          scale_x: value.scaleX,
+          scale_y: value.scaleY,
+        };
+      },
+      diagnostics: () => store.desktopBridgeDiagnostics(frame),
+    });
+    frame.agentZeroDesktop = bridge;
+    frame.__agentZeroDesktopBridge = bridge;
+    remoteWindow.agentZeroDesktop = bridge;
+    remoteWindow.__agentZeroDesktopBridge = bridge;
+    this._desktopBridgeReady = true;
+    this.updateDesktopKeyboardCaptureState(frame);
+    return bridge;
+  },
+
+  desktopBridgeDiagnostics(frame = null) {
+    return {
+      ready: this._desktopBridgeReady,
+      keyboard: this.updateDesktopKeyboardCaptureState(frame),
+      lastStateOk: this._desktopLastState?.ok ?? null,
+    };
+  },
+
+  updateDesktopKeyboardCaptureState(frame = null) {
+    const target = this.desktopFrame(frame);
+    const client = target?.contentWindow?.client;
+    const state = {
+      ready: Boolean(target?.__agentZeroDesktopBridge || target?.contentWindow?.__agentZeroDesktopBridge),
+      active: Boolean(this._desktopKeyboardActive),
+      capture: Boolean(client?.capture_keyboard),
+      focused: Boolean(target && (document.activeElement === target || target.contentDocument?.hasFocus?.())),
+    };
+    this._desktopKeyboardCaptureState = state;
+    return state;
   },
 
   normalizeXpraDesktopWindow(xpraWindow, width, height) {
@@ -1560,7 +1935,10 @@ const model = {
     frame.setAttribute("tabindex", "0");
     if (remoteWindow.__a0XpraDesktopKeyboardBridgeInstalled) return;
 
-    const activate = () => this.focusDesktopFrame(frame, { arm: true });
+    const activate = () => {
+      if (this._desktopFocusInProgress) return;
+      this.focusDesktopFrame(frame, { arm: true });
+    };
     const events = ["pointerdown", "mousedown", "touchstart", "focusin"];
     for (const eventName of events) {
       remoteDocument.addEventListener(eventName, activate, true);
@@ -1812,6 +2190,10 @@ const model = {
           desktop_session_id: sessionId,
           file_id: this.session.file_id || "",
         });
+        if (response?.intentional_shutdown || response?.shutdown) {
+          await this.handleIntentionalDesktopShutdown(response);
+          return;
+        }
         if (response?.ok === false) throw new Error(response.error || "Desktop session closed.");
         this._desktopHeartbeatMisses = 0;
         await this.handleDesktopUrlIntents(response?.url_intents);
@@ -1849,6 +2231,7 @@ const model = {
   },
 
   async handleOfficialOfficeClosed(tabId) {
+    if (this._desktopIntentionalShutdown) return;
     const tab = this.tabs.find((item) => item.tab_id === tabId);
     const hiddenDesktopDocument = !tab && this.session?.tab_id === tabId && this.isDesktopOfficeDocument(this.session)
       ? this.session
@@ -1872,6 +2255,7 @@ const model = {
   defaultTitle(kind, fmt) {
     const date = new Date().toISOString().slice(0, 10);
     if (fmt === "md") return `Document ${date}`;
+    if (fmt === "odt") return `Writer ${date}`;
     if (fmt === "docx") return `DOCX ${date}`;
     if (kind === "spreadsheet") return `Spreadsheet ${date}`;
     if (kind === "presentation") return `Presentation ${date}`;
@@ -1879,22 +2263,120 @@ const model = {
   },
 
   tabTitle(tab = {}) {
+    tab = tab || {};
     return tab.title || tab.document?.basename || basename(tab.path);
   },
 
   tabLabel(tab = {}) {
+    tab = tab || {};
     const title = this.tabTitle(tab);
     return tab.dirty ? `${title} unsaved` : title;
   },
 
   tabIcon(tab = {}) {
+    tab = tab || {};
     const ext = String(tab.extension || tab.document?.extension || "").toLowerCase();
     if (this.isDesktopSession(tab)) return "desktop_windows";
     if (ext === "md") return "article";
-    if (ext === "docx") return "description";
-    if (ext === "xlsx") return "table_chart";
-    if (ext === "pptx") return "co_present";
+    if (ext === "odt" || ext === "docx") return "description";
+    if (ext === "ods" || ext === "xlsx") return "table_chart";
+    if (ext === "odp" || ext === "pptx") return "co_present";
     return "draft";
+  },
+
+  async runNewMenuAction(action = "") {
+    const normalized = String(action || "").trim().toLowerCase();
+    if (normalized === "open") return await this.openFileBrowser();
+    if (normalized === "markdown") return await this.create("document", "md");
+    if (normalized === "writer") return await this.create("document", "odt");
+    if (normalized === "spreadsheet") return await this.create("spreadsheet", "ods");
+    if (normalized === "presentation") return await this.create("presentation", "odp");
+    return null;
+  },
+
+  installHeaderNewMenu(header = null) {
+    if (!header || header.querySelector(".office-header-actions")) return () => {};
+
+    const root = globalThis.document.createElement("div");
+    root.className = "office-header-actions";
+    root.innerHTML = `
+      <button type="button" class="office-header-new-button" aria-haspopup="menu" aria-expanded="false">
+        <span class="material-symbols-outlined" aria-hidden="true">add</span>
+        <span>New</span>
+        <span class="material-symbols-outlined office-new-chevron" aria-hidden="true">expand_more</span>
+      </button>
+      <div class="office-new-menu" role="menu" hidden>
+        <button type="button" class="office-new-menu-item" role="menuitem" data-office-new-action="open">
+          <span class="material-symbols-outlined" aria-hidden="true">folder_open</span>
+          <span>Open</span>
+        </button>
+        <button type="button" class="office-new-menu-item" role="menuitem" data-office-new-action="markdown">
+          <span class="material-symbols-outlined" aria-hidden="true">article</span>
+          <span>Markdown</span>
+        </button>
+        <button type="button" class="office-new-menu-item" role="menuitem" data-office-new-action="writer">
+          <span class="material-symbols-outlined" aria-hidden="true">description</span>
+          <span>Writer</span>
+        </button>
+        <button type="button" class="office-new-menu-item" role="menuitem" data-office-new-action="spreadsheet">
+          <span class="material-symbols-outlined" aria-hidden="true">table_chart</span>
+          <span>Spreadsheet</span>
+        </button>
+        <button type="button" class="office-new-menu-item" role="menuitem" data-office-new-action="presentation">
+          <span class="material-symbols-outlined" aria-hidden="true">co_present</span>
+          <span>Presentation</span>
+        </button>
+      </div>
+    `;
+
+    const button = root.querySelector(".office-header-new-button");
+    const menu = root.querySelector(".office-new-menu");
+    const setOpen = (open) => {
+      root.classList.toggle("is-open", open);
+      button?.setAttribute("aria-expanded", open.toString());
+      if (menu) menu.hidden = !open;
+    };
+    const onButtonClick = (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      setOpen(!root.classList.contains("is-open"));
+    };
+    const onDocumentClick = (event) => {
+      if (!root.contains(event.target)) setOpen(false);
+    };
+    const onDocumentKeydown = (event) => {
+      if (event.key === "Escape") setOpen(false);
+    };
+
+    button?.addEventListener("click", onButtonClick);
+    for (const item of root.querySelectorAll("[data-office-new-action]")) {
+      item.addEventListener("click", async (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        const action = event.currentTarget?.dataset?.officeNewAction || "";
+        setOpen(false);
+        await this.runNewMenuAction(action);
+      });
+    }
+    globalThis.document.addEventListener("click", onDocumentClick);
+    globalThis.document.addEventListener("keydown", onDocumentKeydown);
+
+    const firstHeaderAction = header.querySelector(
+      ".modal-surface-switcher, .modal-dock-button, .office-modal-focus-button, .modal-close",
+    );
+    if (firstHeaderAction) {
+      firstHeaderAction.insertAdjacentElement("beforebegin", root);
+    } else {
+      header.appendChild(root);
+    }
+
+    setOpen(false);
+    return () => {
+      button?.removeEventListener("click", onButtonClick);
+      globalThis.document.removeEventListener("click", onDocumentClick);
+      globalThis.document.removeEventListener("keydown", onDocumentKeydown);
+      root.remove();
+    };
   },
 
   setupFloatingModal(element = null) {
@@ -1927,6 +2409,8 @@ const model = {
     let startWidth = 0;
     let startHeight = 0;
     let resizeMode = "";
+
+    const newMenuCleanup = this.installHeaderNewMenu(header);
 
     const currentBounds = () => {
       const rect = inner.getBoundingClientRect();
@@ -1985,8 +2469,8 @@ const model = {
     focusButton.className = "modal-dock-button office-modal-focus-button";
     focusButton.innerHTML = '<span class="material-symbols-outlined" aria-hidden="true">fullscreen</span>';
     const updateFocusButton = (active) => {
-      focusButton.title = active ? "Restore size" : "Focus mode";
-      focusButton.setAttribute("aria-label", focusButton.title);
+      const label = active ? "Restore size" : "Focus mode";
+      focusButton.setAttribute("aria-label", label);
       focusButton.querySelector(".material-symbols-outlined").textContent = active ? "fullscreen_exit" : "fullscreen";
     };
     updateFocusButton(false);
@@ -2154,6 +2638,7 @@ const model = {
       globalThis.setTimeout(ensurePosition, 0);
     }
     this._floatingCleanup = () => {
+      newMenuCleanup?.();
       cleanup.splice(0).reverse().forEach((entry) => entry());
       modal?.classList?.remove("modal-floating", "modal-no-backdrop");
       inner.classList.remove("is-dragging", "is-resizing", "is-focus-mode");

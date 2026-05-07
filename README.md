@@ -78,18 +78,23 @@ Agent Zero is becoming more visual and shared. The right-side Universal Canvas g
 
 The canvas makes agent work visible. You can watch it browse, inspect what changed, open files, cowork on deliverables, and intervene before a small mistake becomes a large one.
 
-## Cowork on Documents
+## LibreOffice Integration
 
-Create, open, and cowork with the AI on documents, spreadsheets, and presentation decks.
+<img alt="Cowork on Documents" width="1406" height="720" src="https://github.com/user-attachments/assets/4ad71888-4f0d-484a-b68b-631ad99187d7" />
+<br>
 
-The document canvas supports Markdown by default, with LibreOffice-backed DOCX, XLSX, and PPTX workflows when binary artifacts are needed. Agents can create substantial deliverables, read their contents, apply precise saved edits, preserve version history, and generate native XLSX charts directly inside spreadsheets.
+Create, open, and cowork with the AI on documents, spreadsheets, and presentation decks with the LibreOffice stack.
+
+The document canvas supports Markdown by default, with LibreOffice-native ODT, ODS, and ODP workflows when binary office artifacts are needed. Agents can create substantial deliverables, read their contents, apply precise saved edits, preserve version history, and generate native ODS charts directly inside spreadsheets. Microsoft Office compatibility imports and exports remain available when explicitly requested.
+
+Markdown, Writer, Spreadsheet, and Presentation files share a compact active-file header with save, rename, close, and creation controls in both canvas and modal views.
 
 ## Native Browser With Annotations and Extensions
 
-<img width="1280" height="656" alt="Native Browser" src="https://github.com/user-attachments/assets/2e7aa52c-317a-4ded-987c-4d7f12e1bdd7" />
+<img alt="Native Browser" width="1406" height="720" src="https://github.com/user-attachments/assets/8d425af6-fb27-4d46-ade9-8ffa34c7382c" />
 <br>
 
-Agent Zero includes a direct Playwright-powered Browser tool with a visible WebUI viewer. The agent can navigate pages, inspect readable page content, and act through typed page references such as `[link 3]`, `[button 6]`, and `[input text 8]`.
+Agent Zero includes a direct Playwright-powered Browser tool with a visible WebUI viewer. The agent can navigate pages, inspect readable page content, and act through typed page references such as `[link 3]`, `[button 6]`, and `[input text 8]` and use vision.
 
 For web and mobile development, Annotate mode lets you click page elements or regions and leave actionable comments for the agent targeted at the page itself. You can review a UI visually, mark what needs to change, and send those notes straight back into the conversation.
 
@@ -176,7 +181,7 @@ Agent Zero supports plugins, MCP, A2A, custom tools, custom prompts, project-sco
 ## Try These First
 
 - **Research with a browser:** "Open the browser, compare three project management tools for a small AI team, and summarize the tradeoffs with source links."
-- **Cowork on a spreadsheet:** "Create an editable XLSX budget model with assumptions, monthly projections, and a native chart."
+- **Cowork on a spreadsheet:** "Create an editable ODS budget model with assumptions and monthly projections."
 - **Review a web UI:** "Open my local app in the Browser. I will annotate the page with comments; then implement the requested UI fixes."
 - **Work inside a Git project:** "Clone this repository into a new project, inspect the architecture, and propose the safest first improvement."
 - **Create a specialist:** "Create an Agent Profile for financial analysis with cautious reasoning, clear assumptions, and spreadsheet-first deliverables."

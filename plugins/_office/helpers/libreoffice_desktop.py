@@ -5,6 +5,7 @@ import fcntl
 import hashlib
 import json
 import os
+import re
 import shutil
 import socket
 import subprocess
@@ -17,10 +18,10 @@ from pathlib import Path
 from typing import Any
 
 from helpers import files, virtual_desktop
-from plugins._office.helpers import document_store, libreoffice
+from plugins._office.helpers import desktop_state, document_store, libreoffice
 
 
-OFFICIAL_EXTENSIONS = {"docx", "xlsx", "pptx"}
+OFFICIAL_EXTENSIONS = {"odt", "ods", "odp", "docx", "xlsx", "pptx"}
 SYSTEM_SESSION_ID = "agent-zero-desktop"
 SYSTEM_FILE_ID = "system-desktop"
 SYSTEM_TITLE = "Desktop"
@@ -50,6 +51,10 @@ HIDDEN_XFCE_MENU_ENTRIES = (
     ("exo-web-browser.desktop", "Web Browser"),
     ("xfce4-mail-reader.desktop", "Mail Reader"),
     ("xfce4-web-browser.desktop", "Web Browser"),
+    ("xfce4-session-logout.desktop", "Log Out"),
+    ("xfce4-lock-screen.desktop", "Lock Screen"),
+    ("xflock4.desktop", "Lock Screen"),
+    ("xfce4-switch-user.desktop", "Switch User"),
 )
 DESKTOP_README_SOURCE = Path(__file__).resolve().parents[1] / "assets" / "desktop" / "README.md"
 DESKTOP_FOLDER_LINKS = (
@@ -61,6 +66,9 @@ DESKTOP_FOLDER_LINKS = (
 URL_INTENT_MAX_ITEMS = 50
 URL_INTENT_MAX_LENGTH = 8192
 URL_HANDLER_DESKTOP_ID = "agent-zero-browser.desktop"
+SHUTDOWN_HANDLER_DESKTOP_ID = "agent-zero-shutdown.desktop"
+SHUTDOWN_PANEL_LAUNCHER_ID = SHUTDOWN_HANDLER_DESKTOP_ID
+SHUTDOWN_CONFIRM_SECONDS = 8
 OOR_NS = "http://openoffice.org/2001/registry"
 XS_NS = "http://www.w3.org/2001/XMLSchema"
 XSI_NS = "http://www.w3.org/2001/XMLSchema-instance"
@@ -81,10 +89,12 @@ class DesktopSession:
     width: int = DEFAULT_SCREEN_WIDTH
     height: int = DEFAULT_SCREEN_HEIGHT
     processes: dict[str, subprocess.Popen[Any]] = field(default_factory=dict)
+    process_ids: dict[str, int] = field(default_factory=dict)
+    owns_processes: bool = True
     started_at: float = field(default_factory=time.time)
 
     def alive(self) -> bool:
-        return _running(self.processes.get("xpra"))
+        return _running(self.processes.get("xpra")) or _pid_is_running(self.process_ids.get("xpra", 0))
 
     def public(self, doc: dict[str, Any] | None = None) -> dict[str, Any]:
         title = str(doc.get("basename") or "") if doc else self.title
@@ -127,7 +137,7 @@ class LibreOfficeDesktopManager:
                 "status": status,
             }
 
-    def open(self, doc: dict[str, Any]) -> dict[str, Any]:
+    def open(self, doc: dict[str, Any], *, refresh: bool = False) -> dict[str, Any]:
         ext = str(doc.get("extension") or "").lower()
         if ext not in OFFICIAL_EXTENSIONS:
             return {"available": False, "reason": f".{ext} does not use the LibreOffice desktop surface."}
@@ -143,13 +153,59 @@ class LibreOfficeDesktopManager:
                     "error": str(exc),
                     "status": status,
                 }
-            self._open_document_locked(session, doc)
+            refreshed = False
+            try:
+                if refresh and session.file_id == str(doc.get("file_id") or ""):
+                    refreshed = self._reload_document_locked(session, doc)
+                else:
+                    self._open_document_locked(session, doc)
+            except Exception as exc:
+                return {
+                    "available": False,
+                    "error": str(exc),
+                    "status": collect_desktop_status(),
+                }
             session.file_id = str(doc["file_id"])
             session.extension = ext
             session.path = str(doc["path"])
             session.title = str(doc["basename"])
             self._write_manifest(session)
-            return session.public(doc)
+            public = session.public(doc)
+            public["refreshed"] = refreshed
+            return public
+
+    def refresh_document(self, file_id: str) -> dict[str, Any]:
+        normalized = str(file_id or "").strip()
+        if not normalized:
+            return {"ok": True, "refreshed": False}
+        try:
+            doc = document_store.get_document(normalized)
+        except Exception:
+            return {"ok": False, "refreshed": False, "error": "Document not found."}
+
+        ext = str(doc.get("extension") or "").lower()
+        if ext not in OFFICIAL_EXTENSIONS:
+            return {"ok": True, "refreshed": False}
+
+        with self._lock:
+            self._reap_dead_locked()
+            session = self._find_by_file_id_locked(normalized)
+            if not session:
+                existing = self._load_system_desktop_from_manifest_locked()
+                if existing:
+                    self._sessions[existing.session_id] = existing
+                    self._register_virtual_desktop(existing)
+                    if existing.file_id == normalized:
+                        session = existing
+            if not session:
+                return {"ok": True, "refreshed": False}
+            refreshed = self._reload_document_locked(session, doc)
+            session.file_id = str(doc["file_id"])
+            session.extension = ext
+            session.path = str(doc["path"])
+            session.title = str(doc["basename"])
+            self._write_manifest(session)
+            return {"ok": True, "refreshed": refreshed, "desktop": session.public(doc)}
 
     def save(self, session_id: str, file_id: str = "") -> dict[str, Any]:
         session = self.require(session_id)
@@ -197,6 +253,12 @@ class LibreOfficeDesktopManager:
             except Exception:
                 pass
         url_intents = self.claim_url_intents(session.session_id)
+        shutdown_request = self.claim_shutdown_request(session.session_id)
+        if shutdown_request:
+            return self.shutdown_system_desktop(
+                save_first=True,
+                source=str(shutdown_request.get("source") or "tray"),
+            )
         doc = self._document_for_save(session, file_id)
         if not doc:
             return {
@@ -213,11 +275,60 @@ class LibreOfficeDesktopManager:
             "url_intents": url_intents,
         }
 
+    def state(self, *, include_screenshot: bool = False) -> dict[str, Any]:
+        with self._lock:
+            self._reap_dead_locked()
+        return desktop_state.collect_state(include_screenshot=include_screenshot)
+
     def claim_url_intents(self, session_id: str = SYSTEM_SESSION_ID) -> list[dict[str, Any]]:
         session = self.get(session_id) or self.get(SYSTEM_SESSION_ID)
         if not session:
             return []
         return _claim_url_intents(session)
+
+    def claim_shutdown_request(self, session_id: str = SYSTEM_SESSION_ID) -> dict[str, Any] | None:
+        session = self.get(session_id) or self.get(SYSTEM_SESSION_ID)
+        if not session:
+            return None
+        return _claim_shutdown_request(session)
+
+    def shutdown_system_desktop(self, *, save_first: bool = True, source: str = "api") -> dict[str, Any]:
+        with self._lock:
+            session = self._sessions.get(SYSTEM_SESSION_ID)
+        if not session:
+            _remove_system_manifest()
+            return {
+                "ok": True,
+                "closed": 0,
+                "session_id": SYSTEM_SESSION_ID,
+                "shutdown": True,
+                "intentional_shutdown": True,
+                "source": source,
+            }
+
+        save_result = None
+        if save_first:
+            try:
+                save_result = self.save(session.session_id)
+            except Exception as exc:
+                save_result = {"ok": False, "error": str(exc)}
+
+        with self._lock:
+            if self._sessions.get(SYSTEM_SESSION_ID) is session:
+                self._sessions.pop(SYSTEM_SESSION_ID, None)
+        virtual_desktop.unregister_session(session.token)
+        self._terminate_session(session, include_rehydrated=True)
+        self._remove_manifest(session.session_id)
+        _clear_shutdown_request(session)
+        return {
+            "ok": True,
+            "closed": 1,
+            "session_id": session.session_id,
+            "shutdown": True,
+            "intentional_shutdown": True,
+            "source": source,
+            "save": save_result,
+        }
 
     def retarget_document(self, file_id: str, doc: dict[str, Any]) -> dict[str, Any]:
         session = self._find_by_file_id(file_id)
@@ -260,7 +371,7 @@ class LibreOfficeDesktopManager:
         with self._lock:
             self._sessions.pop(session.session_id, None)
         virtual_desktop.unregister_session(session.token)
-        self._terminate_session(session)
+        self._terminate_session(session, include_rehydrated=True)
         self._remove_manifest(session.session_id)
         return {"ok": True, "closed": 1, "session_id": session.session_id, "save": save_result}
 
@@ -327,8 +438,9 @@ class LibreOfficeDesktopManager:
             self._sessions.clear()
         for session in sessions:
             virtual_desktop.unregister_session(session.token)
-            self._terminate_session(session)
-            self._remove_manifest(session.session_id)
+            if session.owns_processes:
+                self._terminate_session(session)
+                self._remove_manifest(session.session_id)
 
     def _document_for_save(self, session: DesktopSession, file_id: str = "") -> dict[str, Any] | None:
         normalized = str(file_id or "").strip()
@@ -362,6 +474,14 @@ class LibreOfficeDesktopManager:
             self._refresh_xfce_desktop(existing)
             return existing
 
+        existing = self._load_system_desktop_from_manifest_locked()
+        if existing:
+            self._sessions[existing.session_id] = existing
+            self._register_virtual_desktop(existing)
+            self._prepare_desktop_url_bridge(existing)
+            self._refresh_xfce_desktop(existing)
+            return existing
+
         status = collect_desktop_status()
         if not status["healthy"]:
             raise RuntimeError(status["message"])
@@ -391,6 +511,54 @@ class LibreOfficeDesktopManager:
         self._register_virtual_desktop(session)
         self._write_manifest(session)
         return session
+
+    def _load_system_desktop_from_manifest_locked(self) -> DesktopSession | None:
+        manifest = SESSION_DIR / f"{SYSTEM_SESSION_ID}.json"
+        if not manifest.exists():
+            return None
+        try:
+            payload = json.loads(manifest.read_text(encoding="utf-8"))
+            display = int(payload.get("display") or 0)
+            xpra_port = int(payload.get("xpra_port") or 0)
+            process_ids = {
+                str(name): pid
+                for name, value in dict(payload.get("pids") or {}).items()
+                if (pid := _coerce_pid(value))
+            }
+            if not display or not xpra_port:
+                return None
+            if not _pid_is_running(process_ids.get("xpra", 0)):
+                return None
+            if not _port_is_accepting("127.0.0.1", xpra_port):
+                return None
+
+            path = str(payload.get("path") or document_store.document_binary_home())
+            file_id = str(payload.get("file_id") or SYSTEM_FILE_ID)
+            extension = str(payload.get("extension") or "").lower()
+            if not extension:
+                extension = "desktop" if file_id == SYSTEM_FILE_ID else Path(path).suffix.lower().lstrip(".")
+            title = str(payload.get("title") or "")
+            if not title:
+                title = SYSTEM_TITLE if file_id == SYSTEM_FILE_ID else Path(path).name or SYSTEM_TITLE
+            return DesktopSession(
+                session_id=SYSTEM_SESSION_ID,
+                file_id=file_id,
+                extension=extension,
+                path=path,
+                title=title,
+                display=display,
+                xpra_port=xpra_port,
+                token=SYSTEM_SESSION_ID,
+                url=_xpra_url(SYSTEM_SESSION_ID),
+                profile_dir=Path(payload.get("profile_dir") or PROFILE_DIR / SYSTEM_SESSION_ID),
+                width=int(payload.get("width") or DEFAULT_SCREEN_WIDTH),
+                height=int(payload.get("height") or DEFAULT_SCREEN_HEIGHT),
+                process_ids=process_ids,
+                owns_processes=False,
+                started_at=float(payload.get("started_at") or time.time()),
+            )
+        except Exception:
+            return None
 
     def _spawn_desktop_locked(self, session: DesktopSession) -> None:
         STATE_DIR.mkdir(parents=True, exist_ok=True)
@@ -478,6 +646,261 @@ class LibreOfficeDesktopManager:
             env=self._display_env(session),
         )
         self._fit_office_window(session, process=session.processes[process_key])
+        window_id = self._wait_for_office_window_locked(
+            session,
+            title=str(doc.get("basename") or ""),
+            process=session.processes[process_key],
+        )
+        if not window_id:
+            raise RuntimeError(
+                f"LibreOffice did not show {doc.get('basename') or 'the document'} "
+                f"on desktop :{session.display}.",
+            )
+        self._fit_office_window_id_locked(
+            session,
+            window_id,
+            env=self._display_env(session),
+            keys=("Escape",),
+        )
+
+    def _reload_document_locked(self, session: DesktopSession, doc: dict[str, Any]) -> bool:
+        if self._close_document_window_locked(session, doc):
+            self._open_document_locked(session, doc)
+            return True
+        if self._send_reload_shortcut_locked(session, doc):
+            return True
+        self._open_document_locked(session, doc)
+        return False
+
+    def _close_document_window_locked(self, session: DesktopSession, doc: dict[str, Any]) -> bool:
+        xdotool = shutil.which("xdotool")
+        if not xdotool:
+            return False
+        title = str(doc.get("basename") or Path(str(doc.get("path") or "")).name or "").strip()
+        if not title:
+            return False
+        window_id = self._office_window_id_locked(session, title=title, fallback=False)
+        if not window_id:
+            return False
+        env = self._display_env(session)
+        self._fit_office_window_id_locked(session, window_id, env=env, keys=("Escape",))
+        for command in (
+            [xdotool, "key", "--clearmodifiers", "alt+F4"],
+            [xdotool, "windowclose", window_id],
+        ):
+            try:
+                subprocess.run(
+                    command,
+                    check=False,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    timeout=3,
+                    env=env,
+                )
+            except (OSError, subprocess.TimeoutExpired):
+                continue
+            if self._wait_for_window_closed_locked(session, window_id):
+                return True
+        self._dismiss_blocking_dialogs(session)
+        return self._wait_for_window_closed_locked(session, window_id, timeout_seconds=1.5)
+
+    def _send_reload_shortcut_locked(self, session: DesktopSession, doc: dict[str, Any]) -> bool:
+        xdotool = shutil.which("xdotool")
+        if not xdotool:
+            return False
+        window_id = self._office_window_id_locked(
+            session,
+            title=str(doc.get("basename") or ""),
+        )
+        if not window_id:
+            return False
+        env = self._display_env(session)
+        self._fit_office_window_id_locked(session, window_id, env=env, keys=("Escape",))
+        try:
+            result = subprocess.run(
+                [xdotool, "key", "--clearmodifiers", "ctrl+shift+r"],
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=4,
+                env=env,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            return False
+        time.sleep(0.8)
+        self._dismiss_blocking_dialogs(session)
+        self._fit_office_window_id_locked(session, window_id, env=env, keys=("Escape",))
+        return result.returncode == 0
+
+    def _office_window_id_locked(
+        self,
+        session: DesktopSession,
+        *,
+        title: str = "",
+        fallback: bool = True,
+    ) -> str:
+        xdotool = shutil.which("xdotool")
+        if not xdotool:
+            return ""
+        env = self._display_env(session)
+        title = str(title or "").strip()
+        searches: list[list[str]] = []
+        if title:
+            escaped_title = re.escape(title)
+            searches.append([
+                xdotool,
+                "search",
+                "--onlyvisible",
+                "--name",
+                escaped_title,
+            ])
+            for window_class in (
+                "libreoffice",
+                "libreoffice-writer",
+                "libreoffice-calc",
+                "libreoffice-impress",
+            ):
+                searches.append([
+                    xdotool,
+                    "search",
+                    "--onlyvisible",
+                    "--class",
+                    window_class,
+                    "--name",
+                    escaped_title,
+                ])
+        if fallback:
+            for window_class in (
+                "libreoffice",
+                "libreoffice-writer",
+                "libreoffice-calc",
+                "libreoffice-impress",
+            ):
+                searches.append([xdotool, "search", "--onlyvisible", "--class", window_class])
+            searches.append([xdotool, "search", "--onlyvisible", "--name", "LibreOffice"])
+        for command in searches:
+            try:
+                result = subprocess.run(
+                    command,
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                    timeout=2,
+                    env=env,
+                )
+            except (OSError, subprocess.TimeoutExpired):
+                continue
+            window_ids = [
+                line.strip()
+                for line in result.stdout.splitlines()
+                if line.strip()
+            ]
+            if window_ids:
+                return window_ids[-1]
+        return ""
+
+    def _wait_for_office_window_locked(
+        self,
+        session: DesktopSession,
+        *,
+        title: str = "",
+        process: subprocess.Popen[Any] | None = None,
+        timeout_seconds: float = 20.0,
+    ) -> str:
+        deadline = time.time() + timeout_seconds
+        last_fallback = ""
+        title = str(title or "").strip()
+        while time.time() < deadline:
+            window_id = self._office_window_id_locked(session, title=title, fallback=False)
+            if window_id:
+                return window_id
+            last_fallback = self._office_window_id_locked(session, fallback=True) or last_fallback
+            if last_fallback and not title:
+                return last_fallback
+            if process and process.poll() is not None and last_fallback:
+                return last_fallback
+            time.sleep(0.25)
+        return self._office_window_id_locked(session, title=title, fallback=True) or last_fallback
+
+    def _wait_for_window_closed_locked(
+        self,
+        session: DesktopSession,
+        window_id: str,
+        *,
+        timeout_seconds: float = 6.0,
+    ) -> bool:
+        deadline = time.time() + timeout_seconds
+        while time.time() < deadline:
+            if not self._window_exists_locked(session, window_id):
+                return True
+            time.sleep(0.2)
+        return not self._window_exists_locked(session, window_id)
+
+    def _window_exists_locked(self, session: DesktopSession, window_id: str) -> bool:
+        xdotool = shutil.which("xdotool")
+        if not xdotool or not window_id:
+            return False
+        try:
+            result = subprocess.run(
+                [xdotool, "getwindowname", str(window_id)],
+                check=False,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=2,
+                env=self._display_env(session),
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            return False
+        return result.returncode == 0
+
+    def _fit_office_window_id_locked(
+        self,
+        session: DesktopSession,
+        window_id: str,
+        *,
+        env: dict[str, str],
+        keys: tuple[str, ...] = (),
+    ) -> None:
+        xdotool = shutil.which("xdotool")
+        if not xdotool or not window_id:
+            return
+        for command in (
+            [xdotool, "windowactivate", window_id],
+            [
+                xdotool,
+                "windowmove",
+                window_id,
+                "0",
+                "0",
+                "windowsize",
+                window_id,
+                str(session.width),
+                str(session.height),
+            ],
+        ):
+            try:
+                subprocess.run(
+                    command,
+                    check=False,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    timeout=2,
+                    env=env,
+                )
+            except (OSError, subprocess.TimeoutExpired):
+                continue
+        for key in keys:
+            try:
+                subprocess.run(
+                    [xdotool, "key", "--clearmodifiers", key],
+                    check=False,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    timeout=2,
+                    env=env,
+                )
+            except (OSError, subprocess.TimeoutExpired):
+                continue
 
     def _prepare_profile(self, session: DesktopSession) -> None:
         user_dir = session.profile_dir / "user"
@@ -638,6 +1061,7 @@ class LibreOfficeDesktopManager:
         applications_dir.mkdir(parents=True, exist_ok=True)
 
         browser_bridge = _write_url_bridge_script(session)
+        shutdown_bridge = _write_shutdown_bridge_script(session)
         helpers_rc = config_dir / "xfce4" / "helpers.rc"
         helpers_rc.parent.mkdir(parents=True, exist_ok=True)
         helpers_rc.write_text(
@@ -666,6 +1090,23 @@ class LibreOfficeDesktopManager:
             try_exec=str(browser_bridge),
             mime_types=_url_handler_mime_types(),
             no_display=True,
+        )
+        _write_desktop_launcher(
+            applications_dir / SHUTDOWN_HANDLER_DESKTOP_ID,
+            name="Shutdown Desktop",
+            exec_line=_desktop_exec(shutdown_bridge),
+            icon="system-shutdown",
+            categories="System;",
+            try_exec=str(shutdown_bridge),
+            no_display=True,
+        )
+        _write_desktop_launcher(
+            config_dir / "xfce4" / "panel" / "launcher-9" / SHUTDOWN_HANDLER_DESKTOP_ID,
+            name="Shutdown Desktop",
+            exec_line=_desktop_exec(shutdown_bridge),
+            icon="system-shutdown",
+            categories="System;",
+            try_exec=str(shutdown_bridge),
         )
         _write_desktop_launcher(
             desktop_dir / "Browser.desktop",
@@ -732,7 +1173,9 @@ class LibreOfficeDesktopManager:
         ET.SubElement(plugins, "property", {"name": "plugin-6", "type": "string", "value": "separator"})
         ET.SubElement(plugins, "property", {"name": "plugin-7", "type": "string", "value": "clock"})
         ET.SubElement(plugins, "property", {"name": "plugin-8", "type": "string", "value": "separator"})
-        ET.SubElement(plugins, "property", {"name": "plugin-9", "type": "string", "value": "actions"})
+        shutdown = ET.SubElement(plugins, "property", {"name": "plugin-9", "type": "string", "value": "launcher"})
+        shutdown_items = ET.SubElement(shutdown, "property", {"name": "items", "type": "array"})
+        ET.SubElement(shutdown_items, "value", {"type": "string", "value": SHUTDOWN_PANEL_LAUNCHER_ID})
 
         tree = ET.ElementTree(root)
         try:
@@ -759,15 +1202,7 @@ if command -v xfconf-query >/dev/null 2>&1; then
   xfconf-query -c xfce4-desktop -p /desktop-icons/file-icons/show-filesystem -n -t bool -s false >/dev/null 2>&1 || true
   xfconf-query -c xfce4-desktop -p /desktop-icons/file-icons/show-removable -n -t bool -s false >/dev/null 2>&1 || true
   xfconf-query -c xfce4-desktop -p /desktop-icons/file-icons/show-trash -n -t bool -s false >/dev/null 2>&1 || true
-  xfconf-query -c xfce4-panel -p /panels -n -a -t int -s 1 >/dev/null 2>&1 || true
-  xfconf-query -c xfce4-panel -p /panels/panel-2 -r -R >/dev/null 2>&1 || true
-  xfconf-query -c xfce4-panel -p /panels/panel-1/plugin-ids -r -R >/dev/null 2>&1 || true
-  xfconf-query -c xfce4-panel -p /panels/panel-1/plugin-ids -n -a -t int -s 1 -t int -s 2 -t int -s 3 -t int -s 4 -t int -s 5 -t int -s 6 -t int -s 7 -t int -s 8 -t int -s 9 >/dev/null 2>&1 || true
-  for plugin_id in $(seq 10 30); do
-    xfconf-query -c xfce4-panel -p "/plugins/plugin-${plugin_id}" -r -R >/dev/null 2>&1 || true
-  done
 fi
-rm -rf "$XDG_CONFIG_HOME"/xfce4/panel/launcher-* 2>/dev/null || true
 for launcher in "$HOME"/Desktop/*.desktop; do
   [ -f "$launcher" ] || continue
   chmod +x "$launcher" 2>/dev/null || true
@@ -1063,28 +1498,45 @@ fi
 
     def _write_manifest(self, session: DesktopSession) -> None:
         SESSION_DIR.mkdir(parents=True, exist_ok=True)
+        pids = dict(session.process_ids)
+        pids.update({name: process.pid for name, process in session.processes.items()})
         payload = {
             "session_id": session.session_id,
             "file_id": session.file_id,
+            "extension": session.extension,
             "path": session.path,
+            "title": session.title,
             "display": session.display,
             "xpra_port": session.xpra_port,
+            "profile_dir": str(session.profile_dir),
+            "width": session.width,
+            "height": session.height,
+            "started_at": session.started_at,
             "owner_pid": os.getpid(),
-            "pids": {name: process.pid for name, process in session.processes.items()},
+            "pids": pids,
         }
         (SESSION_DIR / f"{session.session_id}.json").write_text(json.dumps(payload), encoding="utf-8")
 
     def _remove_manifest(self, session_id: str) -> None:
         (SESSION_DIR / f"{session_id}.json").unlink(missing_ok=True)
 
-    def _terminate_session(self, session: DesktopSession) -> None:
+    def _terminate_session(self, session: DesktopSession, *, include_rehydrated: bool = False) -> None:
         process_names = [name for name in session.processes if name.startswith("soffice")]
         process_names.extend(["xfce", "xpra", "xvfb"])
+        terminated_pids: set[int] = set()
         for name in process_names:
             process = session.processes.get(name)
             if not process:
                 continue
+            if process.pid:
+                terminated_pids.add(process.pid)
             _terminate_process(process)
+        if session.owns_processes or include_rehydrated:
+            for name, pid in session.process_ids.items():
+                if pid in terminated_pids:
+                    continue
+                if name.startswith("soffice") or name in {"xfce", "xpra", "xvfb"}:
+                    _kill_pid(pid)
         self._remove_stale_lock_file(session)
 
     def _remove_stale_lock_file(self, session: DesktopSession, *, path: str | Path | None = None) -> None:
@@ -1275,6 +1727,18 @@ def _url_bridge_lock_path(session: DesktopSession) -> Path:
     return _url_bridge_dir(session) / "browser-url-intents.lock"
 
 
+def _shutdown_request_path(session: DesktopSession) -> Path:
+    return _url_bridge_dir(session) / "shutdown-request.json"
+
+
+def _shutdown_arm_path(session: DesktopSession) -> Path:
+    return _url_bridge_dir(session) / "shutdown-request.arm.json"
+
+
+def _shutdown_lock_path(session: DesktopSession) -> Path:
+    return _url_bridge_dir(session) / "shutdown-request.lock"
+
+
 def _write_url_bridge_script(session: DesktopSession) -> Path:
     bridge_dir = _url_bridge_dir(session)
     bridge_dir.mkdir(parents=True, exist_ok=True)
@@ -1311,6 +1775,117 @@ def main():
             queue_file.flush()
             os.fsync(queue_file.fileno())
         fcntl.flock(lock_file, fcntl.LOCK_UN)
+
+
+if __name__ == "__main__":
+    main()
+""",
+        encoding="utf-8",
+    )
+    try:
+        script.chmod(0o755)
+    except OSError:
+        pass
+    return script
+
+
+def _write_shutdown_bridge_script(session: DesktopSession) -> Path:
+    bridge_dir = _url_bridge_dir(session)
+    bridge_dir.mkdir(parents=True, exist_ok=True)
+    script = bridge_dir / "shutdown-desktop"
+    request = _shutdown_request_path(session)
+    arm = _shutdown_arm_path(session)
+    lock = _shutdown_lock_path(session)
+    script.write_text(
+        f"""#!/usr/bin/env python3
+import fcntl
+import json
+import os
+import shutil
+import subprocess
+import time
+
+REQUEST_PATH = {str(request)!r}
+ARM_PATH = {str(arm)!r}
+LOCK_PATH = {str(lock)!r}
+CONFIRM_SECONDS = {SHUTDOWN_CONFIRM_SECONDS}
+
+
+def notify(message, timeout=None):
+    if not os.environ.get("DISPLAY"):
+        return
+    xmessage = shutil.which("xmessage")
+    if not xmessage:
+        return
+    try:
+        subprocess.Popen(
+            [
+                xmessage,
+                "-buttons",
+                "",
+                "-timeout",
+                str(timeout or CONFIRM_SECONDS),
+                "-center",
+                message,
+            ],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+    except OSError:
+        pass
+
+
+def read_arm(now):
+    try:
+        with open(ARM_PATH, "r", encoding="utf-8") as handle:
+            payload = json.load(handle)
+    except (OSError, json.JSONDecodeError):
+        return None
+    try:
+        created_at = float(payload.get("created_at"))
+    except (TypeError, ValueError):
+        return None
+    if now - created_at > CONFIRM_SECONDS:
+        return None
+    return created_at
+
+
+def write_json_atomic(path, payload):
+    tmp_path = path + ".tmp"
+    with open(tmp_path, "w", encoding="utf-8") as handle:
+        json.dump(payload, handle, ensure_ascii=True)
+        handle.write("\\n")
+        handle.flush()
+        os.fsync(handle.fileno())
+    os.replace(tmp_path, path)
+
+
+def main():
+    os.makedirs(os.path.dirname(REQUEST_PATH), exist_ok=True)
+    now = time.time()
+    with open(LOCK_PATH, "a+", encoding="utf-8") as lock_file:
+        fcntl.flock(lock_file, fcntl.LOCK_EX)
+        armed_at = read_arm(now)
+        if armed_at is None:
+            write_json_atomic(ARM_PATH, {{"created_at": now, "source": "tray"}})
+            notify(
+                f"Shutdown Desktop armed. Click Shutdown Desktop again within {{CONFIRM_SECONDS}} seconds to close it.",
+                CONFIRM_SECONDS,
+            )
+            return
+        try:
+            os.unlink(ARM_PATH)
+        except OSError:
+            pass
+        payload = {{
+            "created_at": now,
+            "armed_at": armed_at,
+            "source": "tray",
+        }}
+        write_json_atomic(REQUEST_PATH, payload)
+        notify("Shutting down Agent Zero Desktop.", 2)
 
 
 if __name__ == "__main__":
@@ -1366,6 +1941,45 @@ def _claim_url_intents(session: DesktopSession) -> list[dict[str, Any]]:
         if len(intents) >= URL_INTENT_MAX_ITEMS:
             break
     return intents
+
+
+def _claim_shutdown_request(session: DesktopSession) -> dict[str, Any] | None:
+    request = _shutdown_request_path(session)
+    if not request.exists():
+        return None
+    try:
+        raw = request.read_text(encoding="utf-8")
+        request.unlink(missing_ok=True)
+    except OSError:
+        return None
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError:
+        payload = {}
+    created_at = payload.get("created_at")
+    try:
+        created_at = float(created_at)
+    except (TypeError, ValueError):
+        created_at = time.time()
+    return {
+        "created_at": created_at,
+        "source": str(payload.get("source") or "tray"),
+    }
+
+
+def _clear_shutdown_request(session: DesktopSession) -> None:
+    request = _shutdown_request_path(session)
+    arm = _shutdown_arm_path(session)
+    lock = _shutdown_lock_path(session)
+    request.unlink(missing_ok=True)
+    request.with_suffix(request.suffix + ".tmp").unlink(missing_ok=True)
+    arm.unlink(missing_ok=True)
+    arm.with_suffix(arm.suffix + ".tmp").unlink(missing_ok=True)
+    lock.unlink(missing_ok=True)
+
+
+def _remove_system_manifest() -> None:
+    (SESSION_DIR / f"{SYSTEM_SESSION_ID}.json").unlink(missing_ok=True)
 
 
 def _url_handler_mime_types() -> tuple[str, ...]:
@@ -1687,6 +2301,14 @@ def _port_is_free(port: int) -> bool:
         return False
 
 
+def _port_is_accepting(host: str, port: int) -> bool:
+    try:
+        with socket.create_connection((host, port), timeout=0.2):
+            return True
+    except OSError:
+        return False
+
+
 def _terminate_process(process: subprocess.Popen[Any]) -> None:
     if process.poll() is not None:
         return
@@ -1724,6 +2346,8 @@ def _coerce_pid(value: Any) -> int:
 
 
 def _pid_is_running(pid: int) -> bool:
+    if pid <= 0:
+        return False
     try:
         os.kill(pid, 0)
         return True

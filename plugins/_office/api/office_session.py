@@ -33,6 +33,10 @@ class OfficeSession(ApiHandler):
                 )
             except ValueError as exc:
                 return {"ok": False, "error": str(exc)}
+            if doc["extension"] in {"odt", "ods", "odp"}:
+                validation = libreoffice.validate_odf(doc["path"])
+                if not validation.get("ok"):
+                    return {"ok": False, "error": validation.get("error") or "ODF validation failed."}
             if doc["extension"] == "docx":
                 validation = libreoffice.validate_docx(doc["path"])
                 if not validation.get("ok"):
@@ -57,6 +61,10 @@ class OfficeSession(ApiHandler):
             return self._desktop_save(input)
         if action == "desktop_sync":
             return self._desktop_sync(input)
+        if action == "desktop_state":
+            return self._desktop_state(input)
+        if action == "desktop_shutdown":
+            return self._desktop_shutdown(input)
         return {"ok": False, "error": f"Unsupported office session action: {action}"}
 
     async def _open_document(self, doc: dict, input: dict, request: Request) -> dict:
@@ -68,7 +76,7 @@ class OfficeSession(ApiHandler):
             origin=self._origin(request),
         )
         if str(doc.get("extension") or "").lower() in libreoffice_desktop.OFFICIAL_EXTENSIONS:
-            desktop = libreoffice_desktop.get_manager().open(doc)
+            desktop = libreoffice_desktop.get_manager().open(doc, refresh=input.get("refresh") is True)
             if not desktop.get("available"):
                 document_store.close_session(session_id=store_session["session_id"])
                 return {
@@ -184,6 +192,17 @@ class OfficeSession(ApiHandler):
         return libreoffice_desktop.get_manager().sync(
             session_id=str(input.get("desktop_session_id") or input.get("session_id") or ""),
             file_id=str(input.get("file_id") or ""),
+        )
+
+    def _desktop_state(self, input: dict) -> dict:
+        include_screenshot = bool(input.get("include_screenshot") is True)
+        return libreoffice_desktop.get_manager().state(include_screenshot=include_screenshot)
+
+    def _desktop_shutdown(self, input: dict) -> dict:
+        save_first = input.get("save_first") is not False
+        return libreoffice_desktop.get_manager().shutdown_system_desktop(
+            save_first=save_first,
+            source=str(input.get("source") or "api"),
         )
 
     def _origin(self, request: Request) -> str:

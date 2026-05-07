@@ -22,9 +22,12 @@ def test_document_canvas_uses_markdown_editor_and_official_libreoffice_desktop_f
     assert "office-rich-editor" not in panel
     assert "office-docx-pages" not in panel
     assert "office-desktop-frame" in panel
-    assert "data-office-desktop-frame" in panel
+    assert "data-office-desktop-host" in panel
+    assert 'x-init="$nextTick(() => $store.office.mountDesktopFrameHost($el))"' in panel
+    assert 'x-effect="$store.office.attachDesktopFrame($el)"' not in panel
+    assert "data-office-desktop-frame" in store
     assert 'title="LibreOffice desktop"' not in panel
-    assert 'aria-label="Desktop"' in panel
+    assert 'frame.setAttribute("aria-label", "Desktop")' in store
     assert "office-command-button" in panel
     assert "office-button-label" in panel
     assert "grid-template-columns: minmax(0, 1fr) auto auto auto" in panel
@@ -32,7 +35,7 @@ def test_document_canvas_uses_markdown_editor_and_official_libreoffice_desktop_f
     assert ".modal-inner.office-modal .modal-scroll" in panel
     assert "office-modal-resizer" in panel
     assert "resize: both" not in panel
-    assert 'tabindex="0"' in panel
+    assert 'frame.setAttribute("tabindex", "0")' in store
     assert "format_underlined" not in panel
     assert "format_align_center" not in panel
     assert "is-native-tile" not in panel
@@ -55,6 +58,10 @@ def test_document_canvas_uses_markdown_editor_and_official_libreoffice_desktop_f
     assert "isDesktopHostVisible" in store
     assert "clearDesktopViewportSyncTimers" in store
     assert "setDesktopHostVisible" in canvas_panel
+    assert "queueMicrotask" in canvas_panel
+    assert "isSurfaceRendered('office')" in canvas_panel
+    assert "isSurfaceVisible('office')" in canvas_panel
+    assert "canvas.isSurfaceMounted?.(\"office\")" in store
     assert "Starting Agent Zero Desktop environment" in store
     assert "handleOfficialOfficeClosed" in store
     assert "ResizeObserver" in store
@@ -67,13 +74,37 @@ def test_document_canvas_uses_markdown_editor_and_official_libreoffice_desktop_f
     assert "right-canvas-resize-end" in store
     assert "isDesktopSession" in store
     assert "desktopFrame" in store
+    assert "attachDesktopFrame" in store
+    assert "mountDesktopFrameHost" in store
+    assert "desktopFrameSrcMatches" in store
+    assert "moveDesktopFrameToKeepalive" in store
+    assert "destroyDesktopFrame" in store
+    assert "office-desktop-keepalive" in store
+    assert "DESKTOP_SHUTDOWN_STORAGE_KEY" in store
+    assert 'callOffice("desktop_shutdown"' in store
+    assert "intentional_shutdown" in store
+    assert "restartDesktopSession" in store
+    assert "shouldShowDesktopEmptyState" in store
+    assert "Restart Desktop" in panel
+    assert "office-desktop-empty" in panel
     assert "unloadDesktopFrames" in store
     assert "restoreDesktopFrames" in store
+    assert "officeDesktopUnloaded" not in store
     assert "primeXpraDesktopFrame" in store
     assert "normalizeXpraDesktopWindow" in store
     assert "installXpraDesktopWheelBridge" in store
+    assert "installXpraDesktopAgentBridge" in store
+    assert "agentZeroDesktop" in store
+    assert 'callOffice("desktop_state"' in store
+    assert "desktopToClient" in store
+    assert "clientToDesktop" in store
+    assert "requestRefresh" in store
+    assert "_desktopBridgeReady" in store
+    assert "_desktopKeyboardCaptureState" in store
     assert "installXpraDesktopKeyboardBridge" in store
     assert "focusDesktopFrame" in store
+    assert "_desktopFocusInProgress" in store
+    assert "if (this._desktopFocusInProgress) return" in store
     assert "_desktopKeyboardActive" in store
     assert "isEditableInputTarget" in store
     assert "reloadDesktopFrame" in store
@@ -101,6 +132,7 @@ def test_document_canvas_uses_markdown_editor_and_official_libreoffice_desktop_f
     assert "__a0AllowScreenResize" in store
     assert "_desktopHeartbeatTimer" in store
     assert "office-modal-focus-button" in store
+    assert "focusButton.title" not in store
     assert "officialOfficeUrl" in store
     assert 'parsed.searchParams.set("offscreen", secureContext ? "true" : "false")' in store
     assert 'parsed.searchParams.set("clipboard_poll", secureContext ? "true" : "false")' in store
@@ -119,6 +151,11 @@ def test_document_canvas_uses_markdown_editor_and_official_libreoffice_desktop_f
     assert "setupTitle()" not in panel
     assert "Setup in progress" not in store
     assert "office-log" not in panel
+    assert "New Writer document" in panel
+    assert "DOCX</span>" not in panel
+    assert "$store.office.create('document', 'odt')" in panel
+    assert "$store.office.create('spreadsheet', 'ods')" in panel
+    assert "$store.office.create('presentation', 'odp')" in panel
 
 
 def test_desktop_xpra_canvas_scroll_is_forwarded_to_the_remote_session():
@@ -222,6 +259,10 @@ def test_official_libreoffice_desktop_route_and_packages_are_declared():
     linux_desktopctl = (
         PROJECT_ROOT / "plugins" / "_office" / "skills" / "linux-desktop" / "scripts" / "desktopctl.sh"
     ).read_text(encoding="utf-8")
+    desktop_state_helper = (
+        PROJECT_ROOT / "plugins" / "_office" / "helpers" / "desktop_state.py"
+    ).read_text(encoding="utf-8")
+    hooks_py = (PROJECT_ROOT / "plugins" / "_office" / "hooks.py").read_text(encoding="utf-8")
     linux_calc_helper = (
         PROJECT_ROOT / "plugins" / "_office" / "skills" / "linux-desktop" / "scripts" / "calc_set_cell.py"
     ).read_text(encoding="utf-8")
@@ -289,11 +330,21 @@ def test_official_libreoffice_desktop_route_and_packages_are_declared():
     assert "DESKTOP_FOLDER_LINKS" in desktop
     assert "HIDDEN_XPRA_DESKTOP_ENTRIES" in desktop
     assert "HIDDEN_XFCE_MENU_ENTRIES" in desktop
+    assert "SHUTDOWN_HANDLER_DESKTOP_ID" in desktop
+    assert "SHUTDOWN_PANEL_LAUNCHER_ID" in desktop
+    assert "SHUTDOWN_CONFIRM_SECONDS" in desktop
+    assert "Shutdown Desktop" in desktop
+    assert "shutdown-request.json" in desktop
+    assert "shutdown-request.arm.json" in desktop
+    assert "shutdown_system_desktop" in desktop
+    assert "claim_shutdown_request" in desktop
     assert "last-show-hidden" in desktop
     assert "exo-mail-reader.desktop" in desktop
     assert "exo-web-browser.desktop" in desktop
     assert "xfce4-mail-reader.desktop" in desktop
     assert "xfce4-web-browser.desktop" in desktop
+    assert "xfce4-session-logout.desktop" in desktop
+    assert "agent-zero-shutdown.desktop" in desktop
     assert "libreoffice-gtk3" in install
     assert "libreofficekit" not in install
     assert "gir1.2-lokdocview" not in install
@@ -314,11 +365,49 @@ def test_official_libreoffice_desktop_route_and_packages_are_declared():
     assert "/a0/usr/workdir" in linux_desktop_skill
     assert "/a0/usr/projects" in linux_desktop_skill
     assert "desktopctl.sh" in linux_desktop_skill
+    assert "/a0/plugins/_office/skills/linux-desktop/scripts/desktopctl.sh" in linux_desktop_skill
     assert "calc-set-cell" in linux_desktop_skill
+    assert "Clicks are explicitly last resort" in linux_desktop_skill or "clicks are explicitly last resort" in linux_desktop_skill
+    assert "fresh Desktop observation" in linux_desktop_skill
+    assert "observe --json --screenshot" in linux_desktop_skill
+    assert "Terminal And CLI Agent Verification" in linux_desktop_skill
+    assert "Do not report from an earlier screenshot path" in linux_desktop_skill
+    assert "screenshot path returned by that final observation" in linux_desktop_skill
+    assert "Never paste natural-language text into that shell prompt" in linux_desktop_skill
+    assert "command not found" in linux_desktop_skill
+    assert "TARGET_CLI=\"example-cli-agent\"" in linux_desktop_skill
+    assert "FALLBACK_CMD" in linux_desktop_skill
+    assert "@openai/codex" not in linux_desktop_skill
     assert "xdotool" in linux_desktopctl
     assert "agent-zero-desktop" in linux_desktopctl
     assert "launch_app" in linux_desktopctl
+    assert "paste_key_for_active_window" in linux_desktopctl
+    assert "active_window_is_terminal" in linux_desktopctl
+    assert "WM_CLASS" in linux_desktopctl
+    for command in (
+        "state)",
+        "observe)",
+        "screenshot)",
+        "active-window)",
+        "geometry)",
+        "wait-window)",
+        "scroll)",
+        "drag)",
+        "right-click)",
+        "paste-text)",
+        "sequence)",
+    ):
+        assert command in linux_desktopctl
     assert "calc_set_cell.py" in linux_desktopctl
+    assert "collect_state" in desktop_state_helper
+    assert "compact_prompt_context" in desktop_state_helper
+    assert "fresh final" in desktop_state_helper
+    assert "xwd" in desktop_state_helper
+    assert "PIL" in desktop_state_helper
+    assert '"x11-utils"' in hooks_py
+    assert '"x11-apps"' in hooks_py
+    assert '"xclip"' in hooks_py
+    assert '"python3-pil"' in hooks_py
     assert "wait_for_document" in linux_calc_helper
     assert "document.store()" in linux_calc_helper
     assert "read_xlsx_cell" in linux_calc_helper
@@ -367,7 +456,12 @@ def test_right_canvas_requires_explicit_open_and_is_absent_on_mobile():
     assert "right-canvas-resize-end" in canvas_store
     assert "dispatchResizeEvent" in canvas_store
     assert "this.isOpen = false;" in canvas_store
-    assert "wasMobileMode && this.width <= MIN_WIDTH" in canvas_store
+    assert "wasMobileMode && this.width < MIN_WIDTH" in canvas_store
+    assert "const MIN_WIDTH = 0" in canvas_store
+    assert "const MAX_WIDTH" not in canvas_store
+    assert "0.58" not in canvas_store
+    assert "min(900px, 58vw)" not in canvas_css
+    assert "max-width: none" in canvas_css
     assert "if (this.isMobileMode && !surface.actionOnly)" in canvas_store
     assert "if (this.isMobileMode)" in canvas_store
     assert "shouldRender()" in canvas_store
@@ -407,21 +501,41 @@ def test_office_skills_preserve_markdown_first_and_opt_in_desktop_policy():
         PROJECT_ROOT / "plugins" / "_office" / "skills" / "presentation-decks" / "SKILL.md"
     ).read_text(encoding="utf-8")
 
-    assert "Markdown is the first-class document format" in office_skill
+    assert "ODF is first-class" in office_skill
+    assert "DOCX, XLSX, or PPTX only" in office_skill
     assert "custom document canvas" in office_skill
     assert "must not open the canvas automatically" in office_skill
     assert "Download and Open in canvas actions" in office_skill
     assert "method: \"create\"" in office_skill
     assert "The Desktop is opt-in" in desktop_skill
+    assert "coordinate clicks only as a last resort" in desktop_skill
+    assert "After any GUI action, verify" in desktop_skill
     assert "custom Markdown editor" in desktop_skill
     assert "Never open the Desktop/canvas automatically" in desktop_skill
     assert "persistent Desktop runtime during initial startup" in desktop_skill
     assert '"format": "md"' in markdown_skill
     assert "never open the canvas automatically" in markdown_skill
-    assert '"format": "docx"' in word_skill
+    assert '"format": "odt"' in word_skill
+    assert "DOCX only" in word_skill
     assert "must not open the canvas automatically" in word_skill
-    assert '"format": "xlsx"' in excel_skill
+    assert '"format": "ods"' in excel_skill
     assert "For a blank workbook request" in excel_skill
     assert "must not open the canvas automatically" in excel_skill
-    assert '"format": "pptx"' in presentation_skill
+    assert '"format": "odp"' in presentation_skill
     assert "must not open the canvas automatically" in presentation_skill
+
+
+def test_office_extra_prompt_includes_existing_desktop_state_without_opening_canvas():
+    canvas_context = (
+        PROJECT_ROOT / "plugins" / "_office" / "helpers" / "canvas_context.py"
+    ).read_text(encoding="utf-8")
+    prompt = (
+        PROJECT_ROOT / "plugins" / "_office" / "prompts" / "agent.extras.office_canvas.md"
+    ).read_text(encoding="utf-8")
+
+    assert "build_desktop_context" in canvas_context
+    assert "session_manifest_exists" in canvas_context
+    assert "collect_state(include_screenshot=False)" in canvas_context
+    assert "compact_prompt_context" in canvas_context
+    assert "ensure_system_desktop" not in canvas_context
+    assert "[DOCUMENT CANVAS]" in prompt
