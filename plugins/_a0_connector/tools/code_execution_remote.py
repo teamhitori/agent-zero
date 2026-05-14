@@ -30,6 +30,16 @@ class CodeExecutionRemote(Tool):
     def _runtime_requires_write_access(runtime: str) -> bool:
         return runtime in {"terminal", "python", "nodejs", "input"}
 
+    @staticmethod
+    def _coerce_bool(value: Any) -> bool:
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, (int, float)):
+            return bool(value)
+        if isinstance(value, str):
+            return value.strip().lower() in {"1", "true", "yes", "on"}
+        return False
+
     def get_log_object(self):
         import uuid
 
@@ -118,6 +128,8 @@ class CodeExecutionRemote(Tool):
             "session": session,
             "context_id": context_id,
         }
+        if runtime != "reset" and self._coerce_bool(self.args.get("reset")):
+            payload["reset"] = True
 
         if runtime in {"terminal", "python", "nodejs"}:
             code = self.args.get("code")

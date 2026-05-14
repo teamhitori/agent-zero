@@ -21,6 +21,8 @@ and retry.
 ## Arguments
 - `runtime`: one of `terminal`, `python`, `nodejs`, `output`, `reset`
 - `session`: integer session id (default `0`)
+- `reset`: optional boolean for `terminal`, `python`, or `nodejs`; when true,
+  the CLI resets the session before running the supplied code
 
 Runtime-specific fields:
 - `terminal`, `python`, `nodejs`: require `code`
@@ -28,7 +30,9 @@ Runtime-specific fields:
 
 ## Notes
 - Reuse `session` when continuing a workflow.
-- Use `output` to poll a running session and `reset` for a stuck session.
+- Use `output` to poll a running session and `runtime=reset` for a stuck session.
+  Use `reset: true` on a new command when you need a clean session and want to
+  run the replacement command immediately.
 - Paths and shell syntax are evaluated on the CLI host, not inside Agent Zero.
 - When the user gives a relative path like `tmp/file.txt`, keep it relative to
   the CLI host terminal. Do not prepend or `cd` to `/a0/usr/workdir`; that is the
