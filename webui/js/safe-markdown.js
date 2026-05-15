@@ -190,7 +190,7 @@ export function renderSafeMarkdown(markdown, options = {}) {
     html = rebaseGithubReadmeHtml(html, githubUrl, branch);
   }
 
-  html = sanitizeHtml(html);
+  html = sanitizeHtml(html, options);
 
   if (openExternalLinksInNewTab) {
     html = addBlankTargetsToLinks(html);

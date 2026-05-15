@@ -33,19 +33,29 @@ class MarkdownSessionManager:
         self._sessions: dict[str, MarkdownSession] = {}
         self._active_by_context: dict[str, str] = {}
 
-    def open(self, doc: dict[str, Any], sid: str = "", context_id: str = "") -> dict[str, Any]:
+    def open(self, doc: dict[str, Any], sid: str = "", context_id: str = "", refresh: bool = False) -> dict[str, Any]:
         ext = str(doc["extension"]).lower()
         if ext != "md":
             raise ValueError(f"Editor is only available for Markdown. Open .{ext} files in the Desktop.")
 
         normalized_context = str(context_id or "")
+        if refresh:
+            try:
+                doc = document_store.register_document(doc["path"], context_id=normalized_context)
+            except Exception:
+                pass
+
         for session in self._sessions.values():
             if session.file_id != doc["file_id"] or session.context_id != normalized_context:
                 continue
             if sid:
                 session.sid = sid
+            if refresh and not session.dirty:
+                session.text = document_store.read_text_for_editor(doc)
+                session.dirty = False
             session.path = doc["path"]
             session.title = doc["basename"]
+            session.updated_at = time.time()
             self.activate(session.session_id)
             return self._payload(session, doc)
 

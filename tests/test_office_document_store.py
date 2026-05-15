@@ -508,6 +508,32 @@ def test_direct_markdown_edits_refresh_open_canvas_session(office_state, monkeyp
     assert manager._sessions[session["session_id"]].text == "# Receiver\n\nSecond"
 
 
+def test_refresh_open_markdown_session_reloads_external_file_edits(office_state):
+    manager = editor_markdown_sessions.MarkdownSessionManager()
+    doc = document_store.create_document("document", "External Refresh", "md", "First")
+    session = manager.open(doc, context_id="ctx-a")
+
+    Path(doc["path"]).write_text("# External Refresh\n\nSecond\n", encoding="utf-8")
+    refreshed = manager.open(doc, context_id="ctx-a", refresh=True)
+
+    assert refreshed["session_id"] == session["session_id"]
+    assert refreshed["text"] == "# External Refresh\n\nSecond\n"
+    assert manager._sessions[session["session_id"]].dirty is False
+
+
+def test_refresh_open_markdown_session_preserves_dirty_editor_text(office_state):
+    manager = editor_markdown_sessions.MarkdownSessionManager()
+    doc = document_store.create_document("document", "Dirty External Refresh", "md", "First")
+    session = manager.open(doc, context_id="ctx-a")
+    manager.input(session["session_id"], text="Unsaved editor text")
+
+    Path(doc["path"]).write_text("External disk text\n", encoding="utf-8")
+    refreshed = manager.open(doc, context_id="ctx-a", refresh=True)
+
+    assert refreshed["text"] == "Unsaved editor text"
+    assert manager._sessions[session["session_id"]].dirty is True
+
+
 def test_markdown_session_rejects_office_binaries(office_state):
     manager = editor_markdown_sessions.MarkdownSessionManager()
     doc = document_store.create_document("document", "Desktop Only", "odt", "Native text")

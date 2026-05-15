@@ -97,7 +97,12 @@ class EditorSession(ApiHandler):
             origin=self._origin(request),
         )
         try:
-            editor = markdown_sessions.get_manager().open(doc, sid="", context_id=context_id)
+            editor = markdown_sessions.get_manager().open(
+                doc,
+                sid="",
+                context_id=context_id,
+                refresh=input.get("refresh") is True,
+            )
         except ValueError as exc:
             document_store.close_session(session_id=store_session["session_id"])
             return {"ok": False, "error": str(exc)}

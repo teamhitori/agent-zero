@@ -60,4 +60,9 @@ class WsEditor(WsHandler):
                 content=str(data.get("content") or ""),
                 context_id=context_id,
             )
-        return markdown_sessions.get_manager().open(doc, sid=sid, context_id=context_id)
+        return markdown_sessions.get_manager().open(
+            doc,
+            sid=sid,
+            context_id=context_id,
+            refresh=data.get("refresh") is True,
+        )

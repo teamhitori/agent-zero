@@ -102,6 +102,8 @@ def test_right_canvas_uses_desktop_surface_id_and_migrates_legacy_office_state()
     editor_main = read("plugins", "_editor", "webui", "main.html")
     editor_web_panel = read("plugins", "_editor", "webui", "editor-panel.html")
     editor_store = read("plugins", "_editor", "webui", "editor-store.js")
+    editor_preview = read("plugins", "_editor", "webui", "editor-preview.js")
+    safe_markdown = read("webui", "js", "safe-markdown.js")
 
     assert 'await callJsExtensions("surfaces_register", this);' in canvas_store
     assert 'await callJsExtensions("right_canvas_register_surfaces", this);' in canvas_store
@@ -123,12 +125,52 @@ def test_right_canvas_uses_desktop_surface_id_and_migrates_legacy_office_state()
     assert "editor-source-editor" in editor_web_panel
     assert "data-editor-source" in editor_web_panel
     assert "editor-tabs" in editor_web_panel
+    assert "editor-new-tab" in editor_web_panel
+    assert 'aria-label="New Markdown"' in editor_web_panel
     assert "editor-close-confirm" in editor_web_panel
     assert "Save &amp; Close" in editor_web_panel
     assert "Close All" in editor_web_panel
+    assert "editor-document-header" not in editor_web_panel
+    assert "editor-document-save-button" not in editor_web_panel
+    assert "data-editor-ace" in editor_web_panel
+    assert "data-editor-preview" in editor_web_panel
+    assert "data-editor-preview-source" in editor_web_panel
+    assert "editor-mode-toggle" in editor_web_panel
+    assert "editor-search-bar" in editor_web_panel
+    assert "editor-preview-title" in editor_web_panel
+    assert "editor-preview-page-editor" in editor_web_panel
+    assert "editor-table-wrap" in editor_web_panel
     assert "closeAllFiles" in editor_store
     assert "confirmPendingClose" in editor_store
+    assert "ensureInitialMarkdownFile" in editor_store
+    assert "await this.ensureInitialMarkdownFile();" in editor_store
+    assert "startPreviewEdit" in editor_store
+    assert "applyPreviewEdit" in editor_store
+    assert "previewEditDirty" in editor_store
+    assert "replacePageMarkdown" in editor_store
+    assert "enhanceTaskLists" in editor_store
+    assert "togglePreviewTask" in editor_store
+    assert 'input[type="checkbox"]' in editor_store
+    assert "renderEditorPreviewMarkdown" in editor_store
+    assert "buildMarkdownPages" in editor_store
+    assert "hydrateActiveSession" in editor_store
+    assert "refreshSourceEditorLayout" in editor_store
+    assert "editor.resize?.(true)" in editor_store
+    assert "openSearch" in editor_store
+    assert "handlePreviewClick" in editor_store
+    assert "ace.edit" in editor_store
+    assert "showGutter: false" in editor_store
     assert "globalThis.confirm" not in editor_store
+    assert ".editor-toolbar" in editor_web_panel
+    assert "overflow: visible;" in editor_web_panel
+    assert "z-index: 10000;" in editor_web_panel
+    assert "renderSafeMarkdown" in editor_preview
+    assert "prepareFootnotes" in editor_preview
+    assert "resolveDocumentRelativePath" in editor_preview
+    assert "slice(start, end)" in editor_preview
+    assert "allowDataImages: true" in editor_preview
+    assert "allowLatex: true" in editor_preview
+    assert "html = sanitizeHtml(html, options);" in safe_markdown
     assert "right-canvas-desktop-actions" in desktop_new_menu
     assert "isSurfaceActive('desktop')" in desktop_new_menu
     assert "runNewMenuAction('writer')" in desktop_new_menu
@@ -296,11 +338,20 @@ def test_document_artifacts_only_open_desktop_from_explicit_document_ui_requests
     assert "officeStore" in auto_open
     assert "desktopStore" in auto_open
     assert "editorStore" in auto_open
+    assert "store?.previewEditDirty" in auto_open
     assert "syncOpenEditorSurface" in auto_open
     assert "isEditorSurfaceOpen" in auto_open
     assert "syncOpenDesktopCanvas" in auto_open
     assert "syncOpenOfficeModal" in auto_open
     assert "isDesktopSurfaceOpen" in auto_open
+    assert "function documentTarget(payload = {}, document = {})" in auto_open
+    assert "syncTextEditorMarkdownResult" in auto_open
+    assert "textEditorTarget" in auto_open
+    assert 'toolName === "text_editor"' in auto_open
+    assert 'return ["write", "patch"].includes(action);' in auto_open
+    assert "void syncOpenDocumentSurfaces(target);" in auto_open
+    assert "void syncOpenDocumentSurfaces({ path, file_id: fileId });" not in auto_open
+    assert "return documentExtension(payload, document) === \"md\" ? \"editor\" : \"desktop\";" in auto_open
     assert "hasSameDocument" in auto_open
     assert 'source: "tool-result-sync"' in auto_open
     assert '".modal .office-panel"' not in auto_open

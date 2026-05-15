@@ -2,6 +2,15 @@ import { createStore } from "/js/AlpineStore.js";
 import { callJsonApi } from "/js/api.js";
 import { getNamespacedClient } from "/js/websocket.js";
 import { store as fileBrowserStore } from "/components/modals/file-browser/file-browser-store.js";
+import {
+  buildMarkdownPages,
+  isExternalHref,
+  isMarkdownPath,
+  renderEditorPreviewMarkdown,
+  resolveDocumentRelativePath,
+  slugifyHeading,
+  splitHref,
+} from "/plugins/_editor/webui/editor-preview.js";
 
 const editorSocket = getNamespacedClient("/ws");
 editorSocket.addHandlers(["ws_webui"]);
@@ -9,6 +18,8 @@ editorSocket.addHandlers(["ws_webui"]);
 const SAVE_MESSAGE_MS = 1800;
 const INPUT_PUSH_DELAY_MS = 650;
 const MAX_HISTORY = 80;
+const SOURCE_MODE = "source";
+const PREVIEW_MODE = "preview";
 
 function currentContextId() {
   try {
@@ -94,6 +105,48 @@ function documentLabel(document = {}) {
   return document.title || document.basename || basename(document.path);
 }
 
+function escapeRegExp(value = "") {
+  return String(value || "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function textNodesUnder(root, skipSelector = "") {
+  const nodes = [];
+  if (!root) return nodes;
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
+    acceptNode(node) {
+      if (!node.nodeValue) return NodeFilter.FILTER_REJECT;
+      if (skipSelector && node.parentElement?.closest(skipSelector)) return NodeFilter.FILTER_REJECT;
+      return NodeFilter.FILTER_ACCEPT;
+    },
+  });
+  while (walker.nextNode()) nodes.push(walker.currentNode);
+  return nodes;
+}
+
+function aceModeForLanguage(language = "") {
+  const value = String(language || "").toLowerCase();
+  const aliases = {
+    bash: "sh",
+    shell: "sh",
+    zsh: "sh",
+    py: "python",
+    js: "javascript",
+    jsx: "javascript",
+    ts: "typescript",
+    md: "markdown",
+    yml: "yaml",
+  };
+  return aliases[value] || value || "text";
+}
+
+function taskLineIndexes(markdown = "") {
+  const indexes = [];
+  String(markdown || "").split("\n").forEach((line, index) => {
+    if (/^\s*(?:[-*+]|\d+[.)])\s+\[[ xX]\](?:\s+|$)/.test(line)) indexes.push(index);
+  });
+  return indexes;
+}
+
 async function callEditor(action, payload = {}) {
   return await callJsonApi("/plugins/_editor/editor_session", {
     action,
@@ -142,7 +195,19 @@ const model = {
   error: "",
   message: "",
   pendingClose: null,
+  viewMode: SOURCE_MODE,
+  searchOpen: false,
+  searchQuery: "",
+  searchMatches: [],
+  searchIndex: -1,
+  activePageIndex: 0,
+  previewEditing: false,
+  previewEditDirty: false,
+  previewEditText: "",
+  previewEditPageIndex: -1,
+  aceUnavailable: false,
   editorText: "",
+  sourceEditor: null,
   _root: null,
   _mode: "modal",
   _initialized: false,
@@ -155,6 +220,12 @@ const model = {
   _focusAttempts: 0,
   _headerCleanup: null,
   _surfaceHandoff: false,
+  _settingSourceEditorValue: false,
+  _sourceEditorChangeHandler: null,
+  _previewEnhanceTimer: null,
+  _staticHighlightPromise: null,
+  _pendingPreviewFragment: "",
+  _initialCreatePromise: null,
 
   async init() {
     if (this._initialized) return;
@@ -167,6 +238,7 @@ const model = {
     if (element) this._root = element;
     this._mode = options?.mode === "canvas" ? "canvas" : "modal";
     if (this._mode === "modal") this.setupMarkdownModal(element);
+    this.scheduleSourceEditorInit();
     this.queueRender();
   },
 
@@ -180,7 +252,9 @@ const model = {
         refresh: payload.refresh === true,
         source: payload.source || "",
       });
+      return;
     }
+    await this.ensureInitialMarkdownFile();
   },
 
   beforeHostHidden() {
@@ -189,6 +263,9 @@ const model = {
 
   cleanup() {
     this.flushInput();
+    this.destroySourceEditor();
+    if (this._previewEnhanceTimer) globalThis.clearTimeout(this._previewEnhanceTimer);
+    this._previewEnhanceTimer = null;
     this._headerCleanup?.();
     this._headerCleanup = null;
     if (this._mode === "modal") this._root = null;
@@ -217,15 +294,571 @@ const model = {
     }
   },
 
+  isSourceMode() {
+    return this.viewMode === SOURCE_MODE;
+  },
+
+  isPreviewMode() {
+    return this.viewMode === PREVIEW_MODE;
+  },
+
+  async setViewMode(mode) {
+    const next = mode === PREVIEW_MODE ? PREVIEW_MODE : SOURCE_MODE;
+    if (this.viewMode === next) return;
+    this.applyPreviewEdit({ silent: true });
+    this.syncEditorText();
+    this.viewMode = next;
+    this.cancelPendingClose();
+    if (next === SOURCE_MODE) {
+      this.setSourceEditorText(this.editorText);
+      this.scheduleSourceEditorInit();
+      this.refreshSourceEditorLayout();
+      this.queueRender({ focus: Boolean(this.session), end: false });
+      return;
+    }
+    this.clampActivePage();
+    this.schedulePreviewEnhance();
+  },
+
+  async toggleViewMode() {
+    await this.setViewMode(this.isPreviewMode() ? SOURCE_MODE : PREVIEW_MODE);
+  },
+
+  viewModeIcon() {
+    return this.isPreviewMode() ? "code" : "article";
+  },
+
+  viewModeTitle() {
+    return this.isPreviewMode() ? "Source edit" : "Preview";
+  },
+
+  pages() {
+    return buildMarkdownPages(this.editorText, this.tabTitle(this.session || {}));
+  },
+
+  currentPage() {
+    const pages = this.pages();
+    const index = Math.max(0, Math.min(this.activePageIndex, pages.length - 1));
+    return pages[index] || pages[0] || { title: this.tabTitle(this.session || {}), markdown: "" };
+  },
+
+  pageTitle() {
+    return this.currentPage().title || this.tabTitle(this.session || {});
+  },
+
+  pagePositionLabel() {
+    const pages = this.pages();
+    if (!pages.length) return "";
+    return `${Math.min(this.activePageIndex + 1, pages.length)} of ${pages.length}`;
+  },
+
+  previewHtml() {
+    return renderEditorPreviewMarkdown(this.currentPage().markdown || "", this.editorText);
+  },
+
+  selectPage(index) {
+    if (this.previewEditing) return;
+    const pages = this.pages();
+    if (!pages.length) return;
+    this.activePageIndex = Math.max(0, Math.min(Number(index) || 0, pages.length - 1));
+    this.schedulePreviewEnhance();
+  },
+
+  nextPage() {
+    this.selectPage(this.activePageIndex + 1);
+  },
+
+  previousPage() {
+    this.selectPage(this.activePageIndex - 1);
+  },
+
+  startPreviewEdit() {
+    if (!this.session || !this.isMarkdown() || !this.isPreviewMode()) return;
+    const page = this.currentPage();
+    this.previewEditing = true;
+    this.previewEditDirty = false;
+    this.previewEditPageIndex = this.activePageIndex;
+    this.previewEditText = page.markdown || "";
+    this.queueRender({ force: true, focus: false });
+    globalThis.requestAnimationFrame?.(() => {
+      const editor = this._root?.querySelector?.("[data-editor-preview-source]");
+      editor?.focus?.({ preventScroll: true });
+    });
+  },
+
+  onPreviewEditInput() {
+    if (this.previewEditing) this.previewEditDirty = true;
+  },
+
+  cancelPreviewEdit() {
+    this.previewEditing = false;
+    this.previewEditDirty = false;
+    this.previewEditText = "";
+    this.previewEditPageIndex = -1;
+    this.schedulePreviewEnhance();
+  },
+
+  applyPreviewEdit(options = {}) {
+    if (!this.previewEditing) return false;
+    if (!this.previewEditDirty && options.force !== true) {
+      this.cancelPreviewEdit();
+      return false;
+    }
+    const pages = this.pages();
+    const index = Math.max(0, Math.min(
+      this.previewEditPageIndex >= 0 ? this.previewEditPageIndex : this.activePageIndex,
+      pages.length - 1,
+    ));
+    const page = pages[index];
+    if (!page) {
+      this.cancelPreviewEdit();
+      return false;
+    }
+
+    let replacement = String(this.previewEditText || "");
+    this.previewEditing = false;
+    this.previewEditDirty = false;
+    this.previewEditText = "";
+    this.previewEditPageIndex = -1;
+
+    return this.replacePageMarkdown(page, replacement, {
+      message: "Page updated",
+      silent: options.silent,
+    });
+  },
+
+  replacePageMarkdown(page = null, markdown = "", options = {}) {
+    if (!page) return false;
+    const source = String(this.editorText || "");
+    const start = Math.max(0, Number(page.start || 0));
+    const end = Math.max(start, Number(page.end ?? source.length));
+    const before = source.slice(0, start);
+    const after = source.slice(end);
+    let replacement = String(markdown || "");
+    if (replacement && after && !replacement.endsWith("\n")) replacement += "\n";
+    const next = before + replacement + after;
+    if (next === source) {
+      this.schedulePreviewEnhance();
+      return false;
+    }
+
+    this.editorText = next;
+    this.setSourceEditorText(next);
+    if (this.session) {
+      this.session.text = next;
+      this.session.dirty = true;
+    }
+    this.dirty = true;
+    this.pushHistory(next);
+    this.scheduleInputPush();
+    this.clampActivePage();
+    this.schedulePreviewEnhance();
+    if (!options.silent && options.message) this.setMessage(options.message);
+    this.queueRender({ force: true, focus: false });
+    return true;
+  },
+
+  togglePreviewTask(taskIndex, checked) {
+    if (!this.session || !this.isMarkdown() || !this.isPreviewMode() || this.previewEditing) return false;
+    const page = this.currentPage();
+    const lines = String(page.markdown || "").split("\n");
+    const indexes = taskLineIndexes(page.markdown || "");
+    const lineIndex = indexes[Number(taskIndex)];
+    if (lineIndex == null || !lines[lineIndex]) return false;
+    const nextLine = lines[lineIndex].replace(
+      /^(\s*(?:[-*+]|\d+[.)])\s+\[)[ xX](\](?:\s+|$))/,
+      `$1${checked ? "x" : " "}$2`,
+    );
+    if (nextLine === lines[lineIndex]) return false;
+    lines[lineIndex] = nextLine;
+    return this.replacePageMarkdown(page, lines.join("\n"));
+  },
+
+  clampActivePage() {
+    const pages = this.pages();
+    this.activePageIndex = Math.max(0, Math.min(this.activePageIndex, Math.max(0, pages.length - 1)));
+  },
+
+  schedulePreviewEnhance() {
+    if (!this.isPreviewMode()) return;
+    if (this._previewEnhanceTimer) globalThis.clearTimeout(this._previewEnhanceTimer);
+    this._previewEnhanceTimer = globalThis.setTimeout(() => {
+      this._previewEnhanceTimer = null;
+      this.enhancePreview();
+    }, 0);
+  },
+
+  enhancePreview() {
+    const root = this._root?.querySelector?.("[data-editor-preview]");
+    if (!root) return;
+    this.addHeadingIds(root);
+    this.enhanceTables(root);
+    this.enhanceTaskLists(root);
+    this.enhanceImages(root);
+    this.enhanceLinks(root);
+    this.enhanceCodeBlocks(root);
+    this.renderMath(root);
+    this.applySearchHighlights(root);
+    this.scrollPendingFragment(root);
+  },
+
+  addHeadingIds(root) {
+    const used = new Map();
+    root.querySelectorAll("h1,h2,h3,h4,h5,h6").forEach((heading) => {
+      if (!heading.id) heading.id = slugifyHeading(heading.textContent || "", used);
+    });
+  },
+
+  enhanceTables(root) {
+    root.querySelectorAll("table").forEach((table) => {
+      if (table.parentElement?.classList.contains("editor-table-wrap")) return;
+      const wrapper = document.createElement("div");
+      wrapper.className = "editor-table-wrap";
+      table.parentNode?.insertBefore(wrapper, table);
+      wrapper.appendChild(table);
+    });
+  },
+
+  enhanceTaskLists(root) {
+    root.querySelectorAll('input[type="checkbox"]').forEach((checkbox, index) => {
+      if (checkbox.dataset.editorTaskEnhanced === "true") return;
+      checkbox.dataset.editorTaskEnhanced = "true";
+      checkbox.dataset.editorTaskIndex = String(index);
+      checkbox.disabled = false;
+      checkbox.removeAttribute("disabled");
+      checkbox.addEventListener("change", (event) => {
+        const target = event.currentTarget;
+        this.togglePreviewTask(Number(target?.dataset?.editorTaskIndex || 0), Boolean(target?.checked));
+      });
+    });
+  },
+
+  enhanceImages(root) {
+    const docPath = this.session?.path || this.session?.document?.path || "";
+    root.querySelectorAll("img[src]").forEach((image) => {
+      const src = image.getAttribute("src") || "";
+      if (!src || isExternalHref(src) || src.startsWith("data:") || src.startsWith("/api/image_get")) return;
+      const resolved = resolveDocumentRelativePath(docPath, src);
+      image.setAttribute("src", `/api/image_get?path=${encodeURIComponent(resolved)}`);
+      image.setAttribute("loading", "lazy");
+    });
+  },
+
+  enhanceLinks(root) {
+    const docPath = this.session?.path || this.session?.document?.path || "";
+    root.querySelectorAll("a[href]").forEach((anchor) => {
+      const href = anchor.getAttribute("href") || "";
+      if (!href || isExternalHref(href)) return;
+      const { path, fragment } = splitHref(href);
+      if (!path && fragment) {
+        anchor.dataset.editorFragment = fragment;
+        return;
+      }
+      if (!isMarkdownPath(path)) return;
+      anchor.dataset.editorMarkdownPath = resolveDocumentRelativePath(docPath, path);
+      anchor.dataset.editorFragment = fragment;
+    });
+  },
+
+  async enhanceCodeBlocks(root) {
+    root.querySelectorAll("pre > code").forEach((code) => {
+      const pre = code.parentElement;
+      if (!pre || pre.parentElement?.classList.contains("editor-code-block")) return;
+      const wrapper = document.createElement("div");
+      wrapper.className = "editor-code-block";
+      const header = document.createElement("div");
+      header.className = "editor-code-header";
+      const language = this.codeLanguage(code);
+      const label = document.createElement("span");
+      label.className = "editor-code-language";
+      label.textContent = language || "text";
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "editor-code-copy";
+      button.textContent = "Copy";
+      button.addEventListener("click", async () => {
+        await navigator.clipboard?.writeText(code.textContent || "");
+        button.textContent = "Copied";
+        globalThis.setTimeout(() => { button.textContent = "Copy"; }, 1200);
+      });
+      header.append(label, button);
+      pre.parentNode?.insertBefore(wrapper, pre);
+      wrapper.append(header, pre);
+      this.highlightCodeBlock(code, language);
+    });
+  },
+
+  codeLanguage(code) {
+    for (const className of code.classList || []) {
+      if (className.startsWith("language-")) return className.slice("language-".length);
+      if (className.startsWith("lang-")) return className.slice("lang-".length);
+    }
+    return "";
+  },
+
+  async highlightCodeBlock(code, language) {
+    if (!language || !globalThis.ace?.require) return;
+    const source = code.textContent || "";
+    try {
+      const highlighter = await this.loadAceStaticHighlighter();
+      const darkMode = globalThis.localStorage?.getItem("darkMode");
+      const theme = darkMode !== "false" ? "ace/theme/github_dark" : "ace/theme/github";
+      const mode = `ace/mode/${aceModeForLanguage(language)}`;
+      highlighter.render(source, mode, theme, 1, true, (result) => {
+        code.innerHTML = result.html;
+        code.classList.add("is-highlighted");
+      });
+    } catch {
+      // Fenced code still renders as preformatted text if highlighting is unavailable.
+    }
+  },
+
+  loadAceStaticHighlighter() {
+    if (this._staticHighlightPromise) return this._staticHighlightPromise;
+    this._staticHighlightPromise = new Promise((resolve, reject) => {
+      let existing = null;
+      try {
+        existing = globalThis.ace?.require?.("ace/ext/static_highlight");
+      } catch {
+        existing = null;
+      }
+      if (existing?.render) {
+        resolve(existing);
+        return;
+      }
+      const script = document.createElement("script");
+      script.src = "/vendor/ace-min/ext-static_highlight.js";
+      script.onload = () => {
+        const loaded = globalThis.ace?.require?.("ace/ext/static_highlight");
+        loaded?.render ? resolve(loaded) : reject(new Error("ACE highlighter unavailable"));
+      };
+      script.onerror = () => reject(new Error("ACE highlighter failed to load"));
+      document.head.appendChild(script);
+    });
+    return this._staticHighlightPromise;
+  },
+
+  renderMath(root) {
+    if (!globalThis.katex?.render) return;
+    for (const node of textNodesUnder(root, "code,pre,.katex,.editor-code-block")) {
+      this.replaceMathInTextNode(node);
+    }
+  },
+
+  replaceMathInTextNode(node) {
+    const text = node.nodeValue || "";
+    const pattern = /(\$\$[^$]+\$\$|\$[^$\n]+\$)/g;
+    if (!pattern.test(text)) return;
+    pattern.lastIndex = 0;
+    const fragment = document.createDocumentFragment();
+    let lastIndex = 0;
+    let match;
+    while ((match = pattern.exec(text))) {
+      if (match.index > lastIndex) fragment.append(document.createTextNode(text.slice(lastIndex, match.index)));
+      const raw = match[0];
+      const displayMode = raw.startsWith("$$");
+      const expression = raw.slice(displayMode ? 2 : 1, displayMode ? -2 : -1);
+      const span = document.createElement(displayMode ? "div" : "span");
+      span.className = displayMode ? "editor-math-display" : "editor-math-inline";
+      try {
+        globalThis.katex.render(expression, span, { throwOnError: false, displayMode });
+      } catch {
+        span.textContent = raw;
+      }
+      fragment.append(span);
+      lastIndex = match.index + raw.length;
+    }
+    if (lastIndex < text.length) fragment.append(document.createTextNode(text.slice(lastIndex)));
+    node.parentNode?.replaceChild(fragment, node);
+  },
+
+  openSearch() {
+    if (!this.isPreviewMode()) {
+      this.setViewMode(PREVIEW_MODE);
+    }
+    this.searchOpen = true;
+    this.runSearch();
+    globalThis.requestAnimationFrame?.(() => {
+      this._root?.querySelector?.("[data-editor-search]")?.focus?.();
+    });
+  },
+
+  closeSearch() {
+    this.searchOpen = false;
+    this.searchQuery = "";
+    this.searchMatches = [];
+    this.searchIndex = -1;
+    this.schedulePreviewEnhance();
+  },
+
+  searchCountLabel() {
+    if (!this.searchQuery) return "";
+    if (!this.searchMatches.length) return "0 of 0";
+    return `${this.searchIndex + 1} of ${this.searchMatches.length}`;
+  },
+
+  runSearch() {
+    const query = String(this.searchQuery || "");
+    if (!query) {
+      this.searchMatches = [];
+      this.searchIndex = -1;
+      this.schedulePreviewEnhance();
+      return;
+    }
+    const lower = query.toLowerCase();
+    const matches = [];
+    for (const page of this.pages()) {
+      const text = this.renderedTextForPage(page);
+      let index = 0;
+      let occurrence = 0;
+      while ((index = text.toLowerCase().indexOf(lower, index)) >= 0) {
+        matches.push({ pageIndex: page.index, occurrence, offset: index });
+        occurrence += 1;
+        index += Math.max(1, lower.length);
+      }
+    }
+    this.searchMatches = matches;
+    this.searchIndex = matches.length ? 0 : -1;
+    this.goToCurrentSearchMatch();
+  },
+
+  nextSearchMatch() {
+    if (!this.searchMatches.length) return;
+    this.searchIndex = (this.searchIndex + 1) % this.searchMatches.length;
+    this.goToCurrentSearchMatch();
+  },
+
+  previousSearchMatch() {
+    if (!this.searchMatches.length) return;
+    this.searchIndex = (this.searchIndex - 1 + this.searchMatches.length) % this.searchMatches.length;
+    this.goToCurrentSearchMatch();
+  },
+
+  goToCurrentSearchMatch() {
+    const match = this.searchMatches[this.searchIndex];
+    if (!match) {
+      this.schedulePreviewEnhance();
+      return;
+    }
+    this.activePageIndex = match.pageIndex;
+    this.schedulePreviewEnhance();
+  },
+
+  renderedTextForPage(page) {
+    const html = renderEditorPreviewMarkdown(page.markdown || "", this.editorText);
+    const doc = new DOMParser().parseFromString(html, "text/html");
+    return doc.body.textContent || "";
+  },
+
+  applySearchHighlights(root) {
+    root.querySelectorAll("mark.editor-search-mark").forEach((mark) => {
+      mark.replaceWith(document.createTextNode(mark.textContent || ""));
+    });
+    const query = String(this.searchQuery || "");
+    if (!query || !this.searchMatches.length) return;
+    const regex = new RegExp(escapeRegExp(query), "gi");
+    const current = this.searchMatches[this.searchIndex];
+    let occurrence = 0;
+    for (const node of textNodesUnder(root, "script,style")) {
+      const text = node.nodeValue || "";
+      if (!regex.test(text)) continue;
+      regex.lastIndex = 0;
+      const fragment = document.createDocumentFragment();
+      let lastIndex = 0;
+      let match;
+      while ((match = regex.exec(text))) {
+        if (match.index > lastIndex) fragment.append(document.createTextNode(text.slice(lastIndex, match.index)));
+        const mark = document.createElement("mark");
+        mark.className = "editor-search-mark";
+        if (current?.pageIndex === this.activePageIndex && current.occurrence === occurrence) {
+          mark.classList.add("is-current");
+        }
+        mark.textContent = match[0];
+        fragment.append(mark);
+        occurrence += 1;
+        lastIndex = match.index + match[0].length;
+      }
+      if (lastIndex < text.length) fragment.append(document.createTextNode(text.slice(lastIndex)));
+      node.parentNode?.replaceChild(fragment, node);
+    }
+    root.querySelector("mark.editor-search-mark.is-current")?.scrollIntoView?.({ block: "center" });
+  },
+
+  async handlePreviewClick(event) {
+    const anchor = event.target?.closest?.("a[href]");
+    if (!anchor) return;
+    const markdownPath = anchor.dataset.editorMarkdownPath || "";
+    const fragment = anchor.dataset.editorFragment || "";
+    if (!markdownPath && fragment) {
+      event.preventDefault();
+      this.navigateToFragment(fragment);
+      return;
+    }
+    if (!markdownPath) return;
+    event.preventDefault();
+    this._pendingPreviewFragment = fragment;
+    const opened = await this.openSession({ path: markdownPath, refresh: true, source: "editor-preview-link" });
+    if (!opened) return;
+    if (this.isPreviewMode() && fragment) {
+      this.navigateToFragment(fragment);
+    }
+  },
+
+  navigateToFragment(fragment = "") {
+    const target = String(fragment || "").replace(/^#/, "");
+    if (!target) return;
+    const pages = this.pages();
+    const normalized = target.toLowerCase();
+    for (const page of pages) {
+      const doc = new DOMParser().parseFromString(renderEditorPreviewMarkdown(page.markdown || "", this.editorText), "text/html");
+      const used = new Map();
+      const headings = [...doc.body.querySelectorAll("h1,h2,h3,h4,h5,h6")];
+      if (headings.some((heading) => (heading.id || slugifyHeading(heading.textContent || "", used)) === normalized)) {
+        this.activePageIndex = page.index;
+        this._pendingPreviewFragment = target;
+        this.schedulePreviewEnhance();
+        return;
+      }
+    }
+    this._pendingPreviewFragment = target;
+    this.schedulePreviewEnhance();
+  },
+
+  scrollPendingFragment(root) {
+    const fragment = this._pendingPreviewFragment;
+    if (!fragment) return;
+    const target = root.querySelector(`#${CSS.escape(fragment)}`);
+    if (target) {
+      target.scrollIntoView({ block: "start" });
+      this._pendingPreviewFragment = "";
+    }
+  },
+
+  handleEditorKeydown(event) {
+    if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "f") {
+      event.preventDefault();
+      this.openSearch();
+    }
+  },
+
   async create(kind = "document", format = "") {
     const fmt = "md";
     const title = this.defaultTitle(kind, fmt);
-    await this.openSession({
+    return await this.openSession({
       action: "create",
       kind: "document",
       format: fmt,
       title,
     });
+  },
+
+  async ensureInitialMarkdownFile() {
+    if (this.session || this.visibleTabs().length > 0 || this.loading) return null;
+    if (!this._root || this._initialCreatePromise) return this._initialCreatePromise;
+    this._initialCreatePromise = this.create("document", "md").finally(() => {
+      this._initialCreatePromise = null;
+    });
+    return await this._initialCreatePromise;
   },
 
   async openFileBrowser() {
@@ -281,8 +914,15 @@ const model = {
       || (session.path && tab.path === session.path)
     ));
     if (existingIndex >= 0) {
-      this.tabs.splice(existingIndex, 1, { ...this.tabs[existingIndex], ...session, tab_id: this.tabs[existingIndex].tab_id });
-      this.activeTabId = this.tabs[existingIndex].tab_id;
+      const tabId = this.tabs[existingIndex].tab_id;
+      const wasActive = this.activeTabId === tabId || this.session?.tab_id === tabId;
+      const merged = { ...this.tabs[existingIndex], ...session, tab_id: tabId };
+      this.tabs.splice(existingIndex, 1, merged);
+      this.activeTabId = tabId;
+      if (wasActive) {
+        this.hydrateActiveSession(merged, { preservePage: true, focus: false });
+        return;
+      }
     } else {
       this.tabs.push(session);
       this.activeTabId = session.tab_id;
@@ -290,18 +930,40 @@ const model = {
     this.selectTab(this.activeTabId);
   },
 
-  selectTab(tabId, options = {}) {
-    this.syncEditorText();
-    const tab = this.tabs.find((item) => item.tab_id === tabId) || this.tabs[0] || null;
-    this.session = tab;
+  hydrateActiveSession(tab, options = {}) {
+    this.session = tab || null;
     this.activeTabId = tab?.tab_id || "";
     this.editorText = String(tab?.text || "");
     this.dirty = Boolean(tab?.dirty);
+    if (this.previewEditing) this.cancelPreviewEdit();
+    if (!options.preservePage) {
+      this.activePageIndex = 0;
+    } else {
+      this.clampActivePage();
+    }
+    this.searchMatches = [];
+    this.searchIndex = -1;
     this.resetHistory(this.editorText);
+    this.setSourceEditorText(this.editorText);
     if (tab?.session_id) {
       requestEditor("editor_activate", { session_id: tab.session_id }, 2500).catch(() => {});
     }
-    this.queueRender({ focus: Boolean(tab) && options.focus !== false });
+    if (this.searchOpen && this.searchQuery) this.runSearch();
+    else if (this.isSourceMode()) this.scheduleSourceEditorInit();
+    else this.schedulePreviewEnhance();
+    this.refreshSourceEditorLayout();
+    this.queueRender({ focus: this.isSourceMode() && Boolean(tab) && options.focus !== false, end: false });
+  },
+
+  selectTab(tabId, options = {}) {
+    this.applyPreviewEdit({ silent: true });
+    this.syncEditorText();
+    const tab = this.tabs.find((item) => item.tab_id === tabId) || this.tabs[0] || null;
+    this.previewEditing = false;
+    this.previewEditDirty = false;
+    this.previewEditText = "";
+    this.previewEditPageIndex = -1;
+    this.hydrateActiveSession(tab, { preservePage: false, focus: options.focus !== false });
   },
 
   ensureActiveTab() {
@@ -314,7 +976,7 @@ const model = {
   },
 
   isTabDirty(tab) {
-    return Boolean(tab?.dirty || (this.isActiveTab(tab) && this.dirty));
+    return Boolean(tab?.dirty || (this.isActiveTab(tab) && (this.dirty || this.previewEditDirty)));
   },
 
   hasPendingClose() {
@@ -362,7 +1024,7 @@ const model = {
       totalCount: tabs.length,
       dirtyCount,
     };
-    if (kind === "single" && ids[0]) {
+    if (kind === "single" && ids[0] && this.activeTabId !== ids[0]) {
       this.selectTab(ids[0], { focus: false });
     }
   },
@@ -400,6 +1062,7 @@ const model = {
       const saved = await this.saveTab(tab);
       if (!saved) return false;
     }
+    if (this.activeTabId === tabId && this.previewEditing) this.cancelPreviewEdit();
     try {
       if (tab.session_id) {
         await requestEditor("editor_close", { session_id: tab.session_id }, 2500).catch(() => null);
@@ -458,8 +1121,87 @@ const model = {
     }
   },
 
+  scheduleSourceEditorInit() {
+    if (!this.isSourceMode()) return;
+    globalThis.requestAnimationFrame?.(() => {
+      globalThis.requestAnimationFrame?.(() => this.initSourceEditor());
+    });
+  },
+
+  initSourceEditor() {
+    if (!this.isSourceMode() || !this._root) return;
+    const container = this._root.querySelector?.("[data-editor-ace]");
+    if (!container || this.sourceEditor) return;
+    if (!globalThis.ace?.edit) {
+      this.aceUnavailable = true;
+      return;
+    }
+
+    const editor = globalThis.ace.edit(container);
+    const darkMode = globalThis.localStorage?.getItem("darkMode");
+    const theme = darkMode !== "false" ? "ace/theme/github_dark" : "ace/theme/github";
+    editor.setTheme(theme);
+    editor.session.setMode("ace/mode/markdown");
+    editor.session.setUseWrapMode(true);
+    editor.setOptions({
+      fontSize: "13px",
+      showGutter: false,
+      showPrintMargin: false,
+      useWorker: false,
+    });
+    editor.renderer.setShowGutter(false);
+    editor.renderer.setScrollMargin(14, 14, 0, 0);
+    editor.setValue(this.editorText || "", -1);
+    this._sourceEditorChangeHandler = () => {
+      if (this._settingSourceEditorValue) return;
+      this.editorText = editor.getValue();
+      this.onSourceInput();
+    };
+    editor.session.on("change", this._sourceEditorChangeHandler);
+    this.sourceEditor = editor;
+    this.aceUnavailable = false;
+    this.queueRender({ focus: Boolean(this.session), end: false });
+  },
+
+  destroySourceEditor() {
+    if (this.sourceEditor?.session && this._sourceEditorChangeHandler) {
+      this.sourceEditor.session.off?.("change", this._sourceEditorChangeHandler);
+    }
+    const container = this.sourceEditor?.container;
+    this.sourceEditor?.destroy?.();
+    if (container) container.textContent = "";
+    this.sourceEditor = null;
+    this._sourceEditorChangeHandler = null;
+  },
+
+  setSourceEditorText(text = "") {
+    if (!this.sourceEditor) return;
+    const value = String(text || "");
+    if (this.sourceEditor.getValue() === value) return;
+    this._settingSourceEditorValue = true;
+    this.sourceEditor.setValue(value, -1);
+    this._settingSourceEditorValue = false;
+    this.refreshSourceEditorLayout();
+  },
+
+  refreshSourceEditorLayout() {
+    const editor = this.sourceEditor;
+    if (!editor) return;
+    const refresh = () => {
+      editor.resize?.(true);
+      editor.renderer?.updateFull?.();
+      editor.renderer?.updateText?.();
+    };
+    if (globalThis.requestAnimationFrame) {
+      globalThis.requestAnimationFrame(() => globalThis.requestAnimationFrame(refresh));
+    } else {
+      globalThis.setTimeout(refresh, 0);
+    }
+  },
+
   async save() {
     if (!this.session || this.saving || !this.isMarkdown()) return;
+    this.applyPreviewEdit({ silent: true });
     this.syncEditorText();
     this.saving = true;
     this.error = "";
@@ -496,6 +1238,7 @@ const model = {
   async saveTab(tab) {
     if (!tab || this.saving || !this.isMarkdown(tab)) return false;
     if (this.isActiveTab(tab)) {
+      this.applyPreviewEdit({ silent: true });
       this.syncEditorText();
     }
     this.saving = true;
@@ -539,6 +1282,7 @@ const model = {
 
   async renameActiveFile() {
     if (!this.session || this.saving) return;
+    this.applyPreviewEdit({ silent: true });
     const session = this.session;
     const path = session.path || session.document?.path || "";
     if (!path) {
@@ -642,12 +1386,24 @@ const model = {
   },
 
   undo() {
+    if (this.sourceEditor && this.isSourceMode()) {
+      this.sourceEditor.undo();
+      this.editorText = this.sourceEditor.getValue();
+      this.syncEditorText();
+      return;
+    }
     if (this._historyIndex <= 0) return;
     this._historyIndex -= 1;
     this.applyEditorText(this._history[this._historyIndex], true);
   },
 
   redo() {
+    if (this.sourceEditor && this.isSourceMode()) {
+      this.sourceEditor.redo();
+      this.editorText = this.sourceEditor.getValue();
+      this.syncEditorText();
+      return;
+    }
     if (this._historyIndex >= this._history.length - 1) return;
     this._historyIndex += 1;
     this.applyEditorText(this._history[this._historyIndex], true);
@@ -663,6 +1419,7 @@ const model = {
 
   applyEditorText(text, markDirty = false) {
     this.editorText = String(text || "");
+    this.setSourceEditorText(this.editorText);
     if (this.session) {
       this.session.text = this.editorText;
       this.session.dirty = markDirty || this.session.dirty;
@@ -684,6 +1441,10 @@ const model = {
 
   syncEditorText() {
     if (!this.session) return;
+    if (this.previewEditing) return;
+    if (this.sourceEditor && this.isSourceMode()) {
+      this.editorText = this.sourceEditor.getValue();
+    }
     this.session.text = this.editorText;
   },
 
@@ -698,6 +1459,7 @@ const model = {
 
   flushInput() {
     if (!this.session?.session_id || !this.isMarkdown()) return;
+    if (this.previewEditing) return;
     this.syncEditorText();
     requestEditor("editor_input", {
       session_id: this.session.session_id,
@@ -707,17 +1469,22 @@ const model = {
 
   format(command) {
     if (!this.session || !this.isMarkdown()) return;
+    if (this.sourceEditor && this.isSourceMode()) {
+      const selected = this.sourceEditor.getSelectedText();
+      const replacement = this.formatReplacement(command, selected);
+      if (replacement === selected) return;
+      this.sourceEditor.session.replace(this.sourceEditor.getSelectionRange(), replacement);
+      this.editorText = this.sourceEditor.getValue();
+      this.onSourceInput();
+      this.sourceEditor.focus();
+      return;
+    }
     const textarea = this._root?.querySelector?.("[data-editor-source]");
     if (!textarea) return;
     const start = textarea.selectionStart || 0;
     const end = textarea.selectionEnd || start;
     const selected = this.editorText.slice(start, end);
-    let replacement = selected;
-    if (command === "bold") replacement = `**${selected || "text"}**`;
-    if (command === "italic") replacement = `*${selected || "text"}*`;
-    if (command === "list") replacement = (selected || "item").split("\n").map((line) => `- ${line.replace(/^[-*]\s+/, "")}`).join("\n");
-    if (command === "numbered") replacement = (selected || "item").split("\n").map((line, index) => `${index + 1}. ${line.replace(/^\d+\.\s+/, "")}`).join("\n");
-    if (command === "table") replacement = "| Column | Value |\n| --- | --- |\n|  |  |";
+    const replacement = this.formatReplacement(command, selected);
     if (replacement === selected) return;
     this.editorText = `${this.editorText.slice(0, start)}${replacement}${this.editorText.slice(end)}`;
     this.onSourceInput();
@@ -726,6 +1493,15 @@ const model = {
       textarea.selectionStart = start;
       textarea.selectionEnd = start + replacement.length;
     });
+  },
+
+  formatReplacement(command, selected = "") {
+    if (command === "bold") return `**${selected || "text"}**`;
+    if (command === "italic") return `*${selected || "text"}*`;
+    if (command === "list") return (selected || "item").split("\n").map((line) => `- ${line.replace(/^[-*]\s+/, "")}`).join("\n");
+    if (command === "numbered") return (selected || "item").split("\n").map((line, index) => `${index + 1}. ${line.replace(/^\d+\.\s+/, "")}`).join("\n");
+    if (command === "table") return "| Column | Value |\n| --- | --- |\n|  |  |";
+    return selected;
   },
 
   queueRender(options = {}) {
@@ -752,6 +1528,16 @@ const model = {
 
   focusEditor(options = {}) {
     if (!this.session || !this.isMarkdown()) return false;
+    if (this.sourceEditor && this.isSourceMode()) {
+      this.sourceEditor.focus();
+      if (options.end !== false) {
+        const session = this.sourceEditor.session;
+        const row = Math.max(0, session.getLength() - 1);
+        const column = session.getLine(row).length;
+        this.sourceEditor.moveCursorTo(row, column);
+      }
+      return true;
+    }
     const source = this._root?.querySelector?.("[data-editor-source]");
     if (!source) return false;
     source.focus?.({ preventScroll: true });
