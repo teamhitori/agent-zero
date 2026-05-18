@@ -32,8 +32,12 @@ def test_host_required_runtime_error_is_repairable(monkeypatch):
         lambda agent=None: {"runtime_backend": "host_required"},
     )
 
-    with pytest.raises(browser_selector.RepairableException, match="Bring Your Own Browser"):
+    with pytest.raises(browser_selector.RepairableException, match="Bring Your Own Browser") as exc_info:
         asyncio.run(browser_selector.get_tool_runtime(_agent("ctx-host-required-missing")))
+
+    message = str(exc_info.value)
+    assert "Internal Docker browser" in message
+    assert "/browser container" in message
 
 
 def test_host_browser_metadata_selection_is_context_scoped():
@@ -305,11 +309,24 @@ def test_connector_runtime_adds_remote_debugging_help_to_cdp_errors():
     assert "chrome://inspect/#remote-debugging" in message
     assert "Allow remote debugging for this browser instance" in message
     assert "/browser host on" in message
+    assert "Internal Docker browser" in message
+    assert "/browser container" in message
     already_helpful = (
         "Open chrome://inspect/#remote-debugging and enable "
         '"Allow remote debugging for this browser instance".'
     )
-    assert runtime._host_browser_error_message(already_helpful) == already_helpful
+    already_helpful_message = runtime._host_browser_error_message(already_helpful)
+    assert already_helpful in already_helpful_message
+    assert "/browser container" in already_helpful_message
+
+
+def test_connector_runtime_adds_docker_recovery_to_host_errors():
+    runtime = ConnectorBrowserRuntime("ctx-host", _agent("ctx-host"))
+
+    message = runtime._host_browser_error_message("Host browser operation failed")
+
+    assert "Internal Docker browser" in message
+    assert "/browser container" in message
 
 
 def test_host_browser_artifacts_materialize_inside_multi_results(monkeypatch, tmp_path):

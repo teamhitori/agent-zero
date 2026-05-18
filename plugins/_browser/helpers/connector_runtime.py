@@ -84,6 +84,10 @@ _HOST_BROWSER_REMOTE_DEBUGGING_HELP = (
     'enable "Allow remote debugging for this browser instance", run `/browser host on`, '
     "and retry."
 )
+_DOCKER_BROWSER_RECOVERY_HELP = (
+    "To use Agent Zero's internal Docker browser instead, open Browser settings and set "
+    "Browser location to Internal Docker browser, or run `/browser container` from A0 CLI."
+)
 _REMOTE_DEBUGGING_ERROR_TOKENS = (
     "remote debugging",
     "remote-debugging",
@@ -478,10 +482,19 @@ class ConnectorBrowserRuntime:
             message = "Host browser operation failed"
         normalized = message.lower()
         if "chrome://inspect/#remote-debugging" in normalized:
-            return message
+            return _append_docker_browser_recovery(message)
         if any(token in normalized for token in _REMOTE_DEBUGGING_ERROR_TOKENS):
-            return f"{message}\n\n{_HOST_BROWSER_REMOTE_DEBUGGING_HELP}"
+            return _append_docker_browser_recovery(
+                f"{message}\n\n{_HOST_BROWSER_REMOTE_DEBUGGING_HELP}"
+            )
+        return _append_docker_browser_recovery(message)
+
+
+def _append_docker_browser_recovery(message: str) -> str:
+    normalized = str(message or "").lower()
+    if "internal docker browser" in normalized or "/browser container" in normalized:
         return message
+    return f"{message}\n\n{_DOCKER_BROWSER_RECOVERY_HELP}"
 
 
 @lru_cache(maxsize=1)
