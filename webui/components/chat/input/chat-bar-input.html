@@ -44,6 +44,14 @@
                       @keydown.down="$store.chatInput.historyNext($event)"
                       @input="$store.chatInput.adjustTextareaHeight()"
                       x-model="$store.chatInput.message"></textarea>
+            <div
+                id="chat-input-progress-placeholder"
+                x-show="$store.chatInput.showProgressPlaceholder"
+                x-html="$store.chatInput.progressPlaceholderHtml"
+                :class="{ 'progress-active': $store.chatInput.progressActive }"
+                aria-hidden="true"
+                style="display: none;"
+            ></div>
             <button id="expand-button" @click="$store.fullScreenInputModal.openModal()" aria-label="Expand input">
                 <span class="material-symbols-outlined" aria-hidden="true">open_in_full</span>
             </button>
@@ -171,6 +179,36 @@
     #chat-input.progress-active {
       border-color: color-mix(in srgb, var(--color-highlight) 20%, transparent);
       outline-color: color-mix(in srgb, var(--color-highlight) 15%, transparent);
+    }
+    #chat-input-progress-placeholder {
+      position: absolute;
+      top: calc(6px + 0.48rem);
+      left: calc(6px + var(--spacing-sm));
+      right: 46px;
+      color: var(--color-text-muted);
+      opacity: 0.7;
+      font-family: "Roboto Mono", monospace;
+      font-size: 0.9rem;
+      line-height: 1.45;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      pointer-events: none;
+      display: flex;
+      align-items: center;
+      gap: 0.35rem;
+    }
+    #chat-input-progress-placeholder.progress-active {
+      animation: placeholder-pulse 2s ease-in-out infinite;
+    }
+    #chat-input-progress-placeholder .chat-input-progress-cue {
+      color: var(--color-text-muted);
+    }
+    #chat-input-progress-placeholder .chat-input-progress-icon {
+      font-size: 1.15rem;
+      line-height: 1;
+      color: var(--color-highlight);
+      vertical-align: -0.18rem;
     }
 
     #expand-button { 
