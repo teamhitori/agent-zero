@@ -5,7 +5,7 @@ import * as notifications from "/components/notifications/notification-store.js"
 import { store as chatsStore } from "/components/sidebar/chats/chats-store.js";
 import { store as browserStore } from "/components/modals/file-browser/file-browser-store.js";
 import { store as skillsImportStore } from "/components/settings/skills/skills-import-store.js";
-import { store as modelConfigStore } from "/plugins/_model_config/webui/model-config-store.js";
+import { store as modelConfigStore, configFromPreset } from "/plugins/_model_config/webui/model-config-store.js";
 import * as shortcuts from "/js/shortcuts.js";
 import { showConfirmDialog } from "/js/confirmDialog.js";
 
@@ -546,12 +546,7 @@ const model = {
   },
 
   _configFromPreset(preset, baseConfig) {
-    const config = JSON.parse(JSON.stringify(baseConfig || {}));
-    if (preset.chat) config.chat_model = this._cleanModelSlot(preset.chat, true);
-    if (preset.utility?.provider || preset.utility?.name) {
-      config.utility_model = this._cleanModelSlot(preset.utility, true);
-    }
-    return config;
+    return configFromPreset(preset, baseConfig || {}, true);
   },
 
   _cleanModelSlot(slot, stripApiKey = true) {
@@ -568,6 +563,7 @@ const model = {
       name,
       chat: this._cleanModelSlot(config?.chat_model || {}, true),
       utility: this._cleanModelSlot(config?.utility_model || {}, true),
+      embedding: this._cleanModelSlot(config?.embedding_model || {}, true),
     };
   },
 
