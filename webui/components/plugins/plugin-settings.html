@@ -49,8 +49,8 @@
                             <label class="toggle">
                                 <input type="checkbox"
                                        :checked="$store.pluginToggle?.status === 'enabled'"
-                                       :disabled="$store.pluginToggle?.isSaving"
-                                       @change="$store.pluginToggle.setEnabled($event.target.checked)">
+                                       :disabled="$store.pluginToggle?.isSaving || context.isLoading"
+                                       @change="context.setPluginEnabled($event.target.checked)">
                                 <span class="toggler"></span>
                             </label>
                             <span class="plugin-toggle-status-text" x-text="$store.pluginToggle?.statusLabel"></span>

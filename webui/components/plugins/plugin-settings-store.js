@@ -114,6 +114,19 @@ const model = {
         await pluginToggleStore.loadToggleStatus();
     },
 
+    async setPluginEnabled(enabled) {
+        if (!pluginToggleStore?.setEnabled) return;
+        this.error = null;
+        try {
+            await pluginToggleStore.setEnabled(enabled, {
+                projectName: this.projectName || "",
+                agentProfileKey: this.agentProfileKey || "",
+            });
+        } catch (e) {
+            this.error = e?.message || "Failed to save activation state";
+        }
+    },
+
     async onScopeChanged() {
         const nextProject = this.projectName || "";
         const nextProfile = this.agentProfileKey || "";
