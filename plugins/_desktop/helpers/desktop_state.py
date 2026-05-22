@@ -6,11 +6,14 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 import time
 from pathlib import Path
 from typing import Any
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
 
 SESSION_ID = "agent-zero-desktop"
@@ -20,9 +23,10 @@ STATE_DIR = BASE_DIR / "usr" / "plugins" / PLUGIN_NAME
 RETIRED_STATE_DIR = BASE_DIR / "usr" / PLUGIN_NAME
 SESSION_DIR = STATE_DIR / "sessions"
 PROFILE_DIR = STATE_DIR / "profiles"
-SCREENSHOT_DIR = STATE_DIR / "screenshots"
+SCREENSHOT_DIR = Path(os.environ.get("A0_DESKTOP_SCREENSHOT_DIR") or BASE_DIR / "tmp" / "desktop" / "screenshots")
 RECENT_SCREENSHOT_SECONDS = 600
 _SAFE_CONTEXT_RE = re.compile(r"[^a-zA-Z0-9_.-]+")
+_SCREENSHOT_SUFFIXES = {".png", ".jpg", ".jpeg", ".xwd"}
 
 
 def session_manifest_path(session_id: str = SESSION_ID) -> Path:
@@ -47,6 +51,7 @@ def collect_state(
     include_screenshot: bool = False,
     screenshot_path: str | Path | None = None,
     context_id: str = "",
+    screenshot_transport: str = "ephemeral",
 ) -> dict[str, Any]:
     errors: list[str] = []
     env_info = resolve_environment(errors=errors)
@@ -72,9 +77,11 @@ def collect_state(
             path=screenshot_path,
             errors=errors,
             context_id=context_id,
+            transport=screenshot_transport,
         )
 
     return stable_state(
+        context_id=context_id,
         display=display,
         profile_dir=profile_dir,
         size=size,
@@ -94,6 +101,7 @@ def capture_screenshot(
     path: str | Path | None = None,
     errors: list[str] | None = None,
     context_id: str = "",
+    transport: str = "ephemeral",
 ) -> dict[str, Any]:
     local_errors = errors if errors is not None else []
     capabilities = capabilities or collect_capabilities()
@@ -109,12 +117,18 @@ def capture_screenshot(
         local_errors.append(message)
         return {"ok": False, "path": "", "format": "", "captured_at": "", "error": message}
 
+    explicit_path = path is not None and str(path).strip() != ""
+    ephemeral_ref = not explicit_path and str(transport or "").strip().lower() != "path"
     screenshot_dir = context_screenshot_dir(context_id)
-    screenshot_dir.mkdir(parents=True, exist_ok=True)
+    if not explicit_path:
+        prune_context_screenshots(context_id=context_id)
+        screenshot_dir.mkdir(parents=True, exist_ok=True)
     timestamp = time.strftime("%Y%m%d-%H%M%S")
-    target = Path(path) if path else screenshot_dir / f"desktop-{timestamp}.png"
+    millis = int((time.time() % 1) * 1000)
+    target = Path(path) if explicit_path else screenshot_dir / f"desktop-{timestamp}-{millis:03d}.png"
     target.parent.mkdir(parents=True, exist_ok=True)
     raw_path = target.with_suffix(".xwd")
+    safe_context = _safe_context_id(context_id)
 
     result = run([xwd, "-root", "-silent", "-out", str(raw_path)], env=env, timeout=8)
     if result.returncode != 0:
@@ -124,12 +138,16 @@ def capture_screenshot(
         return {"ok": False, "path": "", "format": "", "captured_at": "", "error": detail}
 
     if target.suffix.lower() == ".xwd":
+        if not explicit_path:
+            prune_context_screenshots(context_id=context_id, keep_path=raw_path)
         return {
             "ok": True,
             "path": str(raw_path),
             "format": "xwd",
             "captured_at": iso_now(),
             "recent": True,
+            "ephemeral": not explicit_path,
+            "context_id": safe_context,
             "error": "",
         }
 
@@ -141,6 +159,16 @@ def capture_screenshot(
             width = int(image.width)
             height = int(image.height)
         raw_path.unlink(missing_ok=True)
+        if ephemeral_ref:
+            return ephemeral_screenshot_result(
+                target,
+                context_id=context_id,
+                image_format=target.suffix.lower().lstrip(".") or "png",
+                width=width,
+                height=height,
+            )
+        if not explicit_path:
+            prune_context_screenshots(context_id=context_id, keep_path=target)
         return {
             "ok": True,
             "path": str(target),
@@ -149,12 +177,24 @@ def capture_screenshot(
             "height": height,
             "captured_at": iso_now(),
             "recent": True,
+            "ephemeral": not explicit_path,
+            "context_id": safe_context,
             "error": "",
         }
     except Exception as exc:
         try:
             converted = convert_xwd_to_image(raw_path, target)
             raw_path.unlink(missing_ok=True)
+            if ephemeral_ref:
+                return ephemeral_screenshot_result(
+                    target,
+                    context_id=context_id,
+                    image_format=target.suffix.lower().lstrip(".") or "png",
+                    width=converted["width"],
+                    height=converted["height"],
+                )
+            if not explicit_path:
+                prune_context_screenshots(context_id=context_id, keep_path=target)
             return {
                 "ok": True,
                 "path": str(target),
@@ -163,17 +203,34 @@ def capture_screenshot(
                 "height": converted["height"],
                 "captured_at": iso_now(),
                 "recent": True,
+                "ephemeral": not explicit_path,
+                "context_id": safe_context,
                 "error": "",
             }
         except Exception as fallback_exc:
             message = f"Pillow could not convert the XWD screenshot: {exc}; fallback parser failed: {fallback_exc}"
         local_errors.append(message)
+        if ephemeral_ref:
+            raw_path.unlink(missing_ok=True)
+            target.unlink(missing_ok=True)
+            return {
+                "ok": False,
+                "path": "",
+                "format": "",
+                "captured_at": iso_now(),
+                "recent": False,
+                "ephemeral": True,
+                "context_id": safe_context,
+                "error": message,
+            }
         return {
             "ok": True,
             "path": str(raw_path),
             "format": "xwd",
             "captured_at": iso_now(),
             "recent": True,
+            "ephemeral": not explicit_path,
+            "context_id": safe_context,
             "error": message,
         }
 
@@ -518,17 +575,21 @@ def parse_xprop(output: str) -> dict[str, str]:
 
 
 def latest_screenshot(*, context_id: str = "") -> dict[str, Any]:
+    prune_context_screenshots(context_id=context_id, max_age_seconds=RECENT_SCREENSHOT_SECONDS)
     screenshot_dir = context_screenshot_dir(context_id)
     if not screenshot_dir.exists():
         return {"ok": False, "path": "", "format": "", "captured_at": "", "recent": False}
     candidates = [
         path
         for path in screenshot_dir.iterdir()
-        if path.is_file() and path.suffix.lower() in {".png", ".jpg", ".jpeg", ".xwd"}
+        if path.is_file() and path.suffix.lower() in _SCREENSHOT_SUFFIXES
     ]
     if not candidates:
         return {"ok": False, "path": "", "format": "", "captured_at": "", "recent": False}
     latest = max(candidates, key=lambda item: item.stat().st_mtime)
+    for candidate in candidates:
+        if candidate != latest:
+            candidate.unlink(missing_ok=True)
     age = max(0.0, time.time() - latest.stat().st_mtime)
     return {
         "ok": True,
@@ -536,6 +597,8 @@ def latest_screenshot(*, context_id: str = "") -> dict[str, Any]:
         "format": latest.suffix.lower().lstrip("."),
         "captured_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(latest.stat().st_mtime)),
         "recent": age <= RECENT_SCREENSHOT_SECONDS,
+        "ephemeral": True,
+        "context_id": _safe_context_id(context_id),
     }
 
 
@@ -543,6 +606,7 @@ def stable_state(
     *,
     display: str,
     profile_dir: str,
+    context_id: str = "",
     size: dict[str, int] | None = None,
     pointer: dict[str, int] | None = None,
     active_window: dict[str, Any] | None = None,
@@ -554,6 +618,7 @@ def stable_state(
     clean_errors = [str(error) for error in errors or [] if str(error)]
     return {
         "ok": not clean_errors,
+        "context_id": _safe_context_id(context_id),
         "display": display,
         "profile_dir": profile_dir,
         "size": size or {"width": 0, "height": 0},
@@ -594,9 +659,15 @@ def compact_prompt_context(state: dict[str, Any] | None = None) -> str:
         lines.append("- visible=" + "; ".join(visible))
     screenshot = state.get("screenshot") or {}
     if screenshot.get("recent") and screenshot.get("path"):
-        lines.append(f"- recent_screenshot={screenshot['path']}")
+        ephemeral = " ephemeral" if screenshot.get("ephemeral") else ""
+        lines.append(f"- recent_screenshot={screenshot['path']}{ephemeral}")
+    context_id = str(state.get("context_id") or "").strip()
+    if context_id:
+        lines.append(f"- screenshot_context={context_id}")
+    context_arg = f" --context-id {context_id}" if context_id else ""
     lines.append(
-        "- next=plugins/_desktop/skills/linux-desktop/scripts/desktopctl.sh observe --json --screenshot "
+        "- next=plugins/_desktop/skills/linux-desktop/scripts/desktopctl.sh observe --json --screenshot"
+        f"{context_arg} "
         "before any coordinate action; prefer focus/key/paste/save/app-native helpers first."
     )
     lines.append(
@@ -667,6 +738,75 @@ def image_height(path: Path) -> int:
         return 0
 
 
+def ephemeral_screenshot_result(
+    path: Path,
+    *,
+    context_id: str = "",
+    image_format: str = "png",
+    width: int = 0,
+    height: int = 0,
+) -> dict[str, Any]:
+    from helpers import ephemeral_images
+
+    mime = "image/jpeg" if image_format.lower() in {"jpg", "jpeg"} else "image/png"
+    safe_context = _safe_context_id(context_id)
+    ref = ephemeral_images.put_image_bytes(
+        context_id=str(context_id or "").strip(),
+        mime=mime,
+        payload=path.read_bytes(),
+        name=path.name,
+    )
+    path.unlink(missing_ok=True)
+    prune_context_screenshots(context_id=context_id)
+    return {
+        "ok": True,
+        "path": "",
+        "format": image_format,
+        "mime": mime,
+        "width": width,
+        "height": height,
+        "captured_at": iso_now(),
+        "recent": True,
+        "ephemeral": True,
+        "ephemeral_ref": ref,
+        "context_id": safe_context,
+        "vision_load": {
+            "tool_name": "vision_load",
+            "tool_args": {"paths": [ref]},
+        },
+        "error": "",
+    }
+
+
+def prune_context_screenshots(
+    *,
+    context_id: str = "",
+    keep_path: Path | None = None,
+    max_age_seconds: float | None = None,
+) -> None:
+    screenshot_dir = context_screenshot_dir(context_id)
+    if not screenshot_dir.exists():
+        return
+    keep = keep_path.resolve(strict=False) if keep_path else None
+    now = time.time()
+    for candidate in screenshot_dir.iterdir():
+        if not candidate.is_file() or candidate.suffix.lower() not in _SCREENSHOT_SUFFIXES:
+            continue
+        if keep is not None and candidate.resolve(strict=False) == keep:
+            continue
+        if max_age_seconds is not None:
+            try:
+                if now - candidate.stat().st_mtime <= max_age_seconds:
+                    continue
+            except OSError:
+                pass
+        candidate.unlink(missing_ok=True)
+    try:
+        screenshot_dir.rmdir()
+    except OSError:
+        pass
+
+
 def iso_now() -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 
@@ -696,6 +836,7 @@ def main(argv: list[str] | None = None) -> int:
         payload = collect_state(
             include_screenshot=bool(args.screenshot),
             context_id=str(args.context_id or ""),
+            screenshot_transport="path",
         )
         print(json.dumps(payload, sort_keys=True))
         return 0 if payload.get("ok") else 1
@@ -709,6 +850,7 @@ def main(argv: list[str] | None = None) -> int:
             path=args.path,
             errors=errors,
             context_id=str(args.context_id or ""),
+            transport="path",
         )
         if args.json:
             print(json.dumps(payload, sort_keys=True))

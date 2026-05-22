@@ -1631,7 +1631,8 @@ def test_desktop_cleanup_moves_retired_state_to_plugin_state(tmp_path, monkeypat
     assert result["ok"] is True
     assert (plugin_state / "profiles" / "agent-zero-desktop" / "profile.txt").read_text(encoding="utf-8") == "profile\n"
     assert (plugin_state / "sessions" / "agent-zero-desktop.json").read_text(encoding="utf-8") == "{}\n"
-    assert (plugin_state / "screenshots" / "default" / "desktop.png").read_bytes() == b"png"
+    assert not (plugin_state / "screenshots").exists()
+    assert any("Removed retired persistent Desktop screenshots" in warning for warning in result["warnings"])
     assert not retired_state.exists()
 
 

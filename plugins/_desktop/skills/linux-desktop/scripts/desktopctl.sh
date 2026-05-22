@@ -60,7 +60,7 @@ Commands:
   observe --json [--screenshot] [--context-id ID]
                               Return structured state, optionally with a fresh screenshot.
   screenshot [PATH] [--context-id ID]
-                              Capture the Desktop to PATH, or to the default screenshot directory.
+                              Capture the Desktop to PATH, or to the temporary context screenshot directory.
   active-window               Print the active window name.
   geometry PATTERN            Print the first matching visible window geometry.
   wait-window PATTERN         Wait for a visible matching window and print its id.

@@ -30,7 +30,7 @@ The Desktop is an observe-act-verify control surface. Use this decision hierarch
 3. Prefer launcher commands, window focus, keyboard shortcuts, menus, paste, and save commands.
 4. Use coordinate clicks only as a last resort, and only after a fresh Desktop observation.
 5. After any GUI action, verify through Desktop state, active window titles, screenshots, saved file state, or exported output.
-6. For terminal or CLI-agent work, verify against a fresh final `observe --json --screenshot` captured after the command has finished or visibly returned to an input prompt. Do not report from an earlier screenshot path.
+6. For terminal or CLI-agent work, verify against a fresh final `observe --json --screenshot` captured after the command has finished or visibly returned to an input prompt. Agent-facing Desktop screenshots are ephemeral refs; `desktopctl` shell observations return temporary context paths. Do not report from an earlier screenshot path.
 
 Keep these standing rules:
 
@@ -60,7 +60,7 @@ $DESKTOP key ctrl+s
 
 The script targets the persistent `agent-zero-desktop` X display, sets `DISPLAY`, `XAUTHORITY`, and `HOME` to the XFCE profile, then uses `xdotool` for input. Startup normally prepares this session. If `check` fails during explicit Desktop work, report that the Desktop runtime is not ready instead of installing packages ad hoc.
 
-If `observe --json --screenshot` shows a reachable display, visible Desktop/window entries, and a fresh screenshot, the Desktop is usable even when `active_window` is `null`; a bare XFCE desktop can have no active application window. Treat missing screenshots, missing display, or unavailable `xdotool`/`xwd` as blockers and stop with the specific readiness message instead of repeating clicks or inventing a fallback.
+If `observe --json --screenshot` shows a reachable display, visible Desktop/window entries, and a fresh screenshot, the Desktop is usable even when `active_window` is `null`; a bare XFCE desktop can have no active application window. Treat missing screenshots, missing display, or unavailable `xdotool`/`xwd` as blockers and stop with the specific readiness message instead of repeating clicks or inventing a fallback. Use any returned shell screenshot path promptly; only the latest temporary context screenshot is retained.
 
 For direct app launches without coordinates:
 

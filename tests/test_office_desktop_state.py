@@ -185,11 +185,66 @@ def test_desktop_state_screenshot_capture_uses_xwd_and_pillow_when_available(tmp
     assert screenshot["ok"] is True
     assert screenshot["path"] == str(tmp_path / "shot.png")
     assert screenshot["format"] == "png"
+    assert screenshot["ephemeral"] is False
     assert (tmp_path / "shot.png").read_bytes() == b"png"
     assert not (tmp_path / "shot.xwd").exists()
 
 
-def test_desktop_state_default_screenshot_path_is_context_scoped(tmp_path, monkeypatch):
+def test_desktop_state_shell_screenshot_path_is_context_scoped(tmp_path, monkeypatch):
+    monkeypatch.setattr(desktop_state, "SCREENSHOT_DIR", tmp_path)
+    capabilities = {"xwd": "/usr/bin/xwd"}
+    env = {"DISPLAY": ":120"}
+
+    def fake_run(command, *, env, timeout):
+        raw_path = Path(command[command.index("-out") + 1])
+        raw_path.write_bytes(b"xwd")
+        return _completed(command)
+
+    image_module = types.ModuleType("PIL.Image")
+
+    class FakeImage:
+        width = 320
+        height = 240
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def save(self, target):
+            Path(target).write_bytes(b"png")
+
+    image_module.open = lambda _path: FakeImage()
+    pil_module = types.ModuleType("PIL")
+    pil_module.Image = image_module
+
+    monkeypatch.setattr(desktop_state, "run", fake_run)
+    monkeypatch.setitem(sys.modules, "PIL", pil_module)
+    monkeypatch.setitem(sys.modules, "PIL.Image", image_module)
+    stale_path = tmp_path / "ctx_id" / "stale.png"
+    stale_path.parent.mkdir(parents=True)
+    stale_path.write_bytes(b"stale")
+
+    screenshot = desktop_state.capture_screenshot(
+        env,
+        capabilities,
+        errors=[],
+        context_id="ctx/id",
+        transport="path",
+    )
+
+    path = Path(screenshot["path"])
+    assert screenshot["ok"] is True
+    assert screenshot["ephemeral"] is True
+    assert screenshot["context_id"] == "ctx_id"
+    assert path.parent == tmp_path / "ctx_id"
+    assert path.name.startswith("desktop-")
+    assert desktop_state.latest_screenshot(context_id="ctx/id")["path"] == str(path)
+    assert not stale_path.exists()
+
+
+def test_desktop_state_default_screenshot_returns_ephemeral_ref(tmp_path, monkeypatch):
     monkeypatch.setattr(desktop_state, "SCREENSHOT_DIR", tmp_path)
     capabilities = {"xwd": "/usr/bin/xwd"}
     env = {"DISPLAY": ":120"}
@@ -229,11 +284,13 @@ def test_desktop_state_default_screenshot_path_is_context_scoped(tmp_path, monke
         context_id="ctx/id",
     )
 
-    path = Path(screenshot["path"])
     assert screenshot["ok"] is True
-    assert path.parent == tmp_path / "ctx_id"
-    assert path.name.startswith("desktop-")
-    assert desktop_state.latest_screenshot(context_id="ctx/id")["path"] == str(path)
+    assert screenshot["path"] == ""
+    assert screenshot["ephemeral"] is True
+    assert screenshot["ephemeral_ref"].startswith("a0-ephemeral-image://")
+    assert screenshot["vision_load"]["tool_args"]["paths"] == [screenshot["ephemeral_ref"]]
+    assert screenshot["context_id"] == "ctx_id"
+    assert not (tmp_path / "ctx_id").exists()
 
 
 def test_xwd_fallback_parser_handles_truecolor_pixels(tmp_path, monkeypatch):
