@@ -322,8 +322,8 @@ class ComputerUseRemote(Tool):
             return (
                 "COMPUTER_USE_REARM_REQUIRED: "
                 f"{detail} Stop using computer_use_remote for now; ask the user to re-arm "
-                "Computer Use in the A0 CLI with Confirm with User, approve the platform "
-                "permission prompt if shown, then switch back to Free Run if desired. "
+                "Computer Use in the A0 CLI with /computer-use on and approve the platform "
+                "permission prompt if shown. "
                 "Do not retry or use screenshot fallbacks."
             )
         if code:
