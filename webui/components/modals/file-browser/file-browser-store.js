@@ -2,6 +2,47 @@ import { createStore } from "/js/AlpineStore.js";
 import { fetchApi } from "/js/api.js";
 import { formatDateTime } from "/js/time-utils.js";
 import { store as fileEditorStore } from "/components/modals/file-editor/file-editor-store.js";
+import { openLatest as openLatestSurface } from "/js/surfaces.js";
+
+const MARKDOWN_EXTENSIONS = new Set(["md", "markdown", "mdown"]);
+const DESKTOP_EXTENSIONS = new Set(["odt", "ods", "odp", "docx", "xlsx", "pptx", "txt"]);
+const BROWSER_EXTENSIONS = new Set([
+  "html",
+  "htm",
+  "xhtml",
+  "svg",
+  "xml",
+  "pdf",
+  "png",
+  "jpg",
+  "jpeg",
+  "gif",
+  "webp",
+  "bmp",
+  "ico",
+]);
+
+const SURFACE_ACTIONS = {
+  editor: {
+    label: "Open in Editor",
+    icon: "article",
+    title: "Open Markdown in Editor",
+  },
+  desktop: {
+    label: "Open in Desktop",
+    icon: "desktop_windows",
+    title: "Open document in Desktop",
+  },
+  browser: {
+    label: "Open in Browser",
+    icon: "language",
+    title: "Open web-viewable file in Browser",
+  },
+};
+
+function delay(ms) {
+  return new Promise((resolve) => globalThis.setTimeout(resolve, ms));
+}
 
 // Model migrated from legacy file_browser.js (lift-and-shift)
 const model = {
@@ -212,6 +253,57 @@ const model = {
   normalizePath(path) {
     if (!path) return "";
     return path.startsWith("/") ? path : `/${path}`;
+  },
+
+  fileExtension(file = {}) {
+    const name = String(file?.name || file?.path || "").split(/[?#]/, 1)[0].toLowerCase();
+    const index = name.lastIndexOf(".");
+    return index >= 0 ? name.slice(index + 1) : "";
+  },
+
+  fileSurfaceTarget(file = {}) {
+    if (!file || file.is_dir) return "";
+    const ext = this.fileExtension(file);
+    if (MARKDOWN_EXTENSIONS.has(ext)) return "editor";
+    if (BROWSER_EXTENSIONS.has(ext)) return "browser";
+    if (DESKTOP_EXTENSIONS.has(ext)) return "desktop";
+    return "";
+  },
+
+  canOpenInSurface(file = {}) {
+    return Boolean(this.fileSurfaceTarget(file));
+  },
+
+  surfaceAction(file = {}) {
+    const target = this.fileSurfaceTarget(file);
+    return target ? SURFACE_ACTIONS[target] : null;
+  },
+
+  surfaceActionLabel(file = {}) {
+    return this.surfaceAction(file)?.label || "Open";
+  },
+
+  surfaceActionIcon(file = {}) {
+    return this.surfaceAction(file)?.icon || "open_in_new";
+  },
+
+  surfaceActionTitle(file = {}) {
+    return this.surfaceAction(file)?.title || "Open file";
+  },
+
+  fileUrl(file = {}) {
+    const path = this.normalizePath(String(file?.path || ""));
+    const encodedPath = path
+      .split("/")
+      .map((part) => encodeURIComponent(part))
+      .join("/");
+    return `file://${encodedPath}`;
+  },
+
+  storeHasPath(surfaceStore = {}, path = "") {
+    const normalizedPath = this.normalizePath(path);
+    const activePath = surfaceStore?.session?.path || surfaceStore?.session?.document?.path || "";
+    return this.normalizePath(activePath) === normalizedPath;
   },
 
   buildChildPath(name) {
@@ -718,6 +810,58 @@ const model = {
 
   async handleFileUpload(event) {
     return store._handleFileUpload(event); // bind to model to ensure correct context
+  },
+
+  async openInSurface(file = {}) {
+    const target = this.fileSurfaceTarget(file);
+    const path = this.normalizePath(String(file?.path || ""));
+    if (!target || !path) return;
+
+    this.closeDropdown();
+
+    try {
+      if (target === "browser") {
+        const url = this.fileUrl(file);
+        const { store: browserStore } = await import("/plugins/_browser/webui/browser-store.js");
+        await openLatestSurface("browser", { url, source: "file-browser" });
+
+        let opened = false;
+        for (let attempt = 0; attempt < 40 && !opened; attempt += 1) {
+          opened = await browserStore.openUrlIntent(url, { source: "file-browser" });
+          if (!opened) await delay(75);
+        }
+        if (!opened) {
+          throw new Error("Browser surface is unavailable.");
+        }
+      } else {
+        await openLatestSurface(target, { path, source: "file-browser" });
+        if (target === "editor") {
+          const { store: editorStore } = await import("/plugins/_editor/webui/editor-store.js");
+          if (!this.storeHasPath(editorStore, path)) {
+            const session = await editorStore.openPath(path);
+            if (!session || session.ok === false) {
+              throw new Error(editorStore.error || "Markdown could not be opened.");
+            }
+          }
+        }
+        if (target === "desktop") {
+          const { store: desktopStore } = await import("/plugins/_desktop/webui/desktop-store.js");
+          if (!this.storeHasPath(desktopStore, path)) {
+            const session = await desktopStore.openPath(path);
+            if (!session || session.ok === false) {
+              throw new Error(desktopStore.error || "Document could not be opened.");
+            }
+          }
+        }
+      }
+
+      await window.closeModal?.("modals/file-browser/file-browser.html");
+    } catch (error) {
+      window.toastFrontendError?.(
+        error?.message || "Could not open file",
+        "File Browser"
+      );
+    }
   },
 
   async _handleFileUpload(event) {

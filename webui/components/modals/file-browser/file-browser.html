@@ -199,7 +199,18 @@
                             <button
                               type="button"
                               class="dropdown-item"
-                              x-show="!file.is_dir && file.size <= 1048576"
+                              x-show="$store.fileBrowser.canOpenInSurface(file)"
+                              @click="$store.fileBrowser.openInSurface(file)"
+                              :title="$store.fileBrowser.surfaceActionTitle(file)"
+                            >
+                              <span class="material-symbols-outlined" x-text="$store.fileBrowser.surfaceActionIcon(file)"></span>
+                              <span x-text="$store.fileBrowser.surfaceActionLabel(file)"></span>
+                            </button>
+
+                            <button
+                              type="button"
+                              class="dropdown-item"
+                              x-show="!file.is_dir && file.size <= 1048576 && !$store.fileBrowser.canOpenInSurface(file)"
                               @click="$store.fileBrowser.openFileEditor(file)"
                             >
                               <span class="material-symbols-outlined">file_open</span>

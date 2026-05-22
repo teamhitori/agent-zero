@@ -83,6 +83,17 @@ def test_document_store_create_defaults_to_markdown(office_state):
     assert Path(doc["path"]).read_text(encoding="utf-8").startswith("# Research Note")
 
 
+def test_text_files_register_as_desktop_documents(office_state):
+    path = office_state.workdir / "plain-note.txt"
+    path.write_text("Plain text belongs on the Desktop surface.\n", encoding="utf-8")
+
+    doc = document_store.register_document(path)
+
+    assert doc["extension"] == "txt"
+    assert "txt" in document_store.DESKTOP_TEXT_EXTENSIONS
+    assert "txt" in desktop_session.OFFICIAL_EXTENSIONS
+
+
 @pytest.mark.parametrize(
     ("kind", "title", "fmt", "expected_name"),
     [

@@ -874,7 +874,7 @@ const model = {
   },
 
   async openPath(path) {
-    await this.openSession({ path: String(path || "") });
+    return await this.openSession({ path: String(path || "") });
   },
 
   async openSession(payload = {}) {

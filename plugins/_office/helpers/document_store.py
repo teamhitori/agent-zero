@@ -23,7 +23,8 @@ from plugins._office.helpers import pptx_writer
 PLUGIN_NAME = "_office"
 OPEN_DOCUMENT_EXTENSIONS = {"odt", "ods", "odp"}
 OOXML_EXTENSIONS = {"docx", "xlsx", "pptx"}
-SUPPORTED_EXTENSIONS = {"md", *OPEN_DOCUMENT_EXTENSIONS, *OOXML_EXTENSIONS}
+DESKTOP_TEXT_EXTENSIONS = {"txt"}
+SUPPORTED_EXTENSIONS = {"md", *OPEN_DOCUMENT_EXTENSIONS, *OOXML_EXTENSIONS, *DESKTOP_TEXT_EXTENSIONS}
 DEFAULT_TTL_SECONDS = 8 * 60 * 60
 MAX_SAVE_BYTES = 512 * 1024 * 1024
 ODF_OFFICE_NS = "urn:oasis:names:tc:opendocument:xmlns:office:1.0"
@@ -636,6 +637,8 @@ def template_bytes(kind: str, ext: str, title: str, content: str) -> bytes:
     ext = normalize_extension(ext or "md")
     if ext == "md":
         return _markdown(title, content).encode("utf-8")
+    if ext == "txt":
+        return (str(content or "") or str(title or "")).encode("utf-8")
     if ext == "odt":
         return odt_bytes(title, content)
     if ext == "ods":

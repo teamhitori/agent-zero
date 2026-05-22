@@ -42,7 +42,7 @@ function extensionOf(path = "") {
 }
 
 function isOfficialExtension(extension = "") {
-  return ["odt", "ods", "odp", "docx", "xlsx", "pptx"].includes(String(extension || "").toLowerCase());
+  return ["odt", "ods", "odp", "docx", "xlsx", "pptx", "txt"].includes(String(extension || "").toLowerCase());
 }
 
 function parentPath(path = "") {
@@ -579,7 +579,7 @@ const model = {
   },
 
   async openPath(path) {
-    await this.openSession({ path: String(path || "") });
+    return await this.openSession({ path: String(path || "") });
   },
 
   async openSession(payload = {}) {
@@ -1047,7 +1047,7 @@ const model = {
 
   isBinaryOffice(tab = this.session) {
     const ext = String(tab?.extension || tab?.document?.extension || "").toLowerCase();
-    return ["odt", "ods", "odp", "docx", "xlsx", "pptx"].includes(ext);
+    return ["odt", "ods", "odp", "docx", "xlsx", "pptx", "txt"].includes(ext);
   },
 
   hasOfficialOffice(tab = this.session) {
@@ -2321,6 +2321,7 @@ const model = {
     if (ext === "odt" || ext === "docx") return "description";
     if (ext === "ods" || ext === "xlsx") return "table_chart";
     if (ext === "odp" || ext === "pptx") return "co_present";
+    if (ext === "txt") return "notes";
     return "draft";
   },
 

@@ -23,7 +23,7 @@ from plugins._desktop.helpers import desktop_state
 from plugins._office.helpers import document_store, libreoffice
 
 
-OFFICIAL_EXTENSIONS = {"odt", "ods", "odp", "docx", "xlsx", "pptx"}
+OFFICIAL_EXTENSIONS = {"odt", "ods", "odp", "docx", "xlsx", "pptx", "txt"}
 PLUGIN_NAME = "_desktop"
 SYSTEM_SESSION_ID = "agent-zero-desktop"
 SYSTEM_FILE_ID = "system-desktop"
