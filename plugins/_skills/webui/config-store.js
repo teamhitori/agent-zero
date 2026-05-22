@@ -34,31 +34,44 @@ function entryKey(entry) {
   return String(entry.path || entry.name || "").trim().toLowerCase();
 }
 
+function entryKeys(entry) {
+  return [entry?.path, entry?.name]
+    .map((value) => String(value || "").trim().toLowerCase())
+    .filter(Boolean);
+}
+
+function entriesMatch(left, right) {
+  const rightKeys = new Set(entryKeys(right));
+  if (rightKeys.size === 0) return false;
+  return entryKeys(left).some((key) => rightKeys.has(key));
+}
+
 function ensureConfig(config) {
   if (!config || typeof config !== "object") return;
   const activeSkills = Array.isArray(config.active_skills) ? config.active_skills : [];
+  const hiddenSkills = Array.isArray(config.hidden_skills) ? config.hidden_skills : [];
+
+  config.active_skills = compactEntries(activeSkills, MAX_ACTIVE_SKILLS_FALLBACK);
+  config.hidden_skills = compactEntries(hiddenSkills);
+}
+
+function compactEntries(entries, limit = null) {
   const normalized = [];
   const seen = new Set();
 
-  for (const item of activeSkills) {
+  for (const item of entries || []) {
     const entry = normalizeEntry(item);
     const key = entryKey(entry);
     if (!entry || !key || seen.has(key)) continue;
     seen.add(key);
-    normalized.push(entry);
-  }
-
-  config.active_skills = normalized;
-}
-
-function compactEntries(entries) {
-  return entries
-    .map((entry) => normalizeEntry(entry))
-    .filter(Boolean)
-    .map((entry) => ({
+    normalized.push({
       ...(entry.name ? { name: entry.name } : {}),
       ...(entry.path ? { path: entry.path } : {}),
-    }));
+    });
+    if (limit !== null && normalized.length >= limit) break;
+  }
+
+  return normalized;
 }
 
 window.createSkillsConfigModel = (context, config) => ({
@@ -66,18 +79,31 @@ window.createSkillsConfigModel = (context, config) => ({
   mutatingChat: false,
   catalog: [],
   search: "",
+  mode: "pinned",
   maxActiveSkills: MAX_ACTIVE_SKILLS_FALLBACK,
   selectedSkills: [],
+  hiddenSkills: [],
   chatContextAvailable: false,
 
   initDefaults() {
     ensureConfig(config);
+    this.mode = this.isChatMode ? "visible" : "pinned";
     this.selectedSkills = [...this.activeEntries];
+    this.hiddenSkills = [...this.hiddenEntries];
+  },
+
+  get isChatMode() {
+    return context?.openOptions?.focus === "chat";
   },
 
   get activeEntries() {
     ensureConfig(config);
     return config.active_skills;
+  },
+
+  get hiddenEntries() {
+    ensureConfig(config);
+    return config.hidden_skills;
   },
 
   get selectedCount() {
@@ -86,6 +112,22 @@ window.createSkillsConfigModel = (context, config) => ({
 
   get selectedCountLabel() {
     return `${this.selectedCount} / ${this.maxActiveSkills}`;
+  },
+
+  get hiddenCount() {
+    return this.catalog.filter((skill) => this.isHidden(skill)).length;
+  },
+
+  get visibleCount() {
+    return Math.max(0, this.catalog.length - this.hiddenCount);
+  },
+
+  get visibilityCountLabel() {
+    return `${this.visibleCount} visible / ${this.hiddenCount} hidden`;
+  },
+
+  get currentCountLabel() {
+    return this.mode === "visible" ? this.visibilityCountLabel : this.selectedCountLabel;
   },
 
   get catalogMap() {
@@ -121,11 +163,39 @@ window.createSkillsConfigModel = (context, config) => ({
     return entryKey(entry);
   },
 
+  setMode(mode) {
+    if (!["visible", "pinned"].includes(mode)) return;
+    this.mode = mode;
+  },
+
+  panelTitle() {
+    return this.mode === "visible" ? "Available skills" : "Pinned skills";
+  },
+
+  panelSubtitle() {
+    if (this.mode === "visible") {
+      return this.isChatMode
+        ? "Checked skills are visible to the model in this chat. Uncheck a skill to hide its title, description, search result, and load access."
+        : "Checked skills are visible to the model by default. Uncheck a skill to hide it from the prompt catalog and skills_tool.";
+    }
+    return "Check a skill to pin its full instructions into prompt extras. Uncheck it to remove the pin.";
+  },
+
+  isHidden(skill) {
+    return this.hiddenSkills.some((entry) => entriesMatch(entry, skill));
+  },
+
   isSelected(skill) {
-    return this.selectedSkills.some((entry) => entryKey(entry) === entryKey(skill));
+    if (this.mode === "visible") {
+      return !this.isHidden(skill);
+    }
+    return this.selectedSkills.some((entry) => entriesMatch(entry, skill));
   },
 
   isCheckboxDisabled(skill) {
+    if (this.mode === "visible") {
+      return this.mutatingChat || (this.isChatMode && !this.chatContextAvailable);
+    }
     return this.mutatingChat || (!this.isSelected(skill) && this.selectedCount >= this.maxActiveSkills);
   },
 
@@ -159,7 +229,7 @@ window.createSkillsConfigModel = (context, config) => ({
     return name ? this.catalogMap.get(name) || null : null;
   },
 
-  _setSelectedSkills(entries) {
+  _setSelectedSkills(entries, { writeConfig = true } = {}) {
     const normalized = [];
     const seen = new Set();
 
@@ -173,12 +243,50 @@ window.createSkillsConfigModel = (context, config) => ({
     }
 
     this.selectedSkills = normalized;
-    config.active_skills = compactEntries(normalized);
+    if (writeConfig) {
+      config.active_skills = compactEntries(normalized, this.maxActiveSkills);
+    }
+  },
+
+  _setHiddenSkills(entries, { writeConfig = true } = {}) {
+    const normalized = compactEntries(entries);
+    this.hiddenSkills = normalized;
+    if (writeConfig) {
+      config.hidden_skills = normalized;
+    }
   },
 
   async toggleSkill(skill, selected) {
-    const key = entryKey(skill);
-    const nextEntries = this.selectedSkills.filter((entry) => entryKey(entry) !== key);
+    if (this.mode === "visible") {
+      await this.toggleSkillVisibility(skill, selected);
+      return;
+    }
+    await this.togglePinnedSkill(skill, selected);
+  },
+
+  async toggleSkillVisibility(skill, selected) {
+    const previous = [...this.hiddenSkills];
+    const nextEntries = this.hiddenSkills.filter((entry) => !entriesMatch(entry, skill));
+
+    if (!selected) {
+      nextEntries.push({
+        name: String(skill.name || "").trim(),
+        path: String(skill.path || "").trim(),
+      });
+    }
+
+    this._setHiddenSkills(nextEntries, { writeConfig: !this.isChatMode });
+
+    if (this.isChatMode && this.chatContextAvailable) {
+      const ok = await this.submitChatAction(selected ? "show" : "hide", skill);
+      if (!ok) {
+        this._setHiddenSkills(previous, { writeConfig: false });
+      }
+    }
+  },
+
+  async togglePinnedSkill(skill, selected) {
+    const nextEntries = this.selectedSkills.filter((entry) => !entriesMatch(entry, skill));
 
     if (selected) {
       if (this.selectedCount >= this.maxActiveSkills && !this.isSelected(skill)) {
@@ -195,9 +303,9 @@ window.createSkillsConfigModel = (context, config) => ({
       });
     }
 
-    this._setSelectedSkills(nextEntries);
+    this._setSelectedSkills(nextEntries, { writeConfig: !this.isChatMode });
 
-    if (this.chatContextAvailable) {
+    if (this.isChatMode && this.chatContextAvailable) {
       await this.submitChatAction(selected ? "activate" : "deactivate", skill);
     }
   },
@@ -207,9 +315,20 @@ window.createSkillsConfigModel = (context, config) => ({
   },
 
   async clearSelections() {
+    if (this.mode === "visible") {
+      const previous = [...this.hiddenSkills];
+      this._setHiddenSkills([], { writeConfig: !this.isChatMode });
+      if (this.isChatMode && this.chatContextAvailable) {
+        for (const entry of previous) {
+          await this.submitChatAction("show", entry);
+        }
+      }
+      return;
+    }
+
     const previous = [...this.selectedSkills];
-    this._setSelectedSkills([]);
-    if (this.chatContextAvailable) {
+    this._setSelectedSkills([], { writeConfig: !this.isChatMode });
+    if (this.isChatMode && this.chatContextAvailable) {
       for (const entry of previous) {
         await this.submitChatAction("deactivate", entry);
       }
@@ -220,7 +339,17 @@ window.createSkillsConfigModel = (context, config) => ({
     this.chatContextAvailable = !!response?.context_available;
     const activeFromChat = Array.isArray(response?.active_skills) ? response.active_skills : null;
     const activeFromConfig = this.activeEntries;
-    this._setSelectedSkills(activeFromChat || activeFromConfig);
+    const hiddenFromChat = Array.isArray(response?.hidden_skills) ? response.hidden_skills : null;
+    const hiddenFromConfig = this.hiddenEntries;
+
+    this._setSelectedSkills(
+      this.isChatMode ? activeFromChat || [] : activeFromConfig,
+      { writeConfig: !this.isChatMode },
+    );
+    this._setHiddenSkills(
+      this.isChatMode ? hiddenFromChat || [] : hiddenFromConfig,
+      { writeConfig: !this.isChatMode },
+    );
   },
 
   async loadCatalog() {
@@ -229,7 +358,7 @@ window.createSkillsConfigModel = (context, config) => ({
       const response = await API.callJsonApi(CATALOG_API, {
         action: "list",
         project_name: context.projectName || "",
-        context_id: chatsStore.selectedContext?.id || "",
+        context_id: this.isChatMode ? chatsStore.selectedContext?.id || "" : "",
       });
 
       if (!response?.ok) {
@@ -244,6 +373,7 @@ window.createSkillsConfigModel = (context, config) => ({
       this.maxActiveSkills = MAX_ACTIVE_SKILLS_FALLBACK;
       this.chatContextAvailable = false;
       this._setSelectedSkills(this.activeEntries);
+      this._setHiddenSkills(this.hiddenEntries);
       await toastFrontendError(error?.message || "Failed to load skills", "Skills");
     } finally {
       this.loadingCatalog = false;
@@ -274,6 +404,7 @@ window.createSkillsConfigModel = (context, config) => ({
       this.catalog = Array.isArray(response.skills) ? response.skills : this.catalog;
       this.maxActiveSkills = Number(response.max_active_skills) || this.maxActiveSkills;
       this.chatContextAvailable = !!response.context_available;
+      this.applyCatalogState(response);
       return true;
     } catch (error) {
       await toastFrontendError(error?.message || "Failed to update skills", "Skills");
