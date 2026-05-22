@@ -873,8 +873,12 @@ const model = {
     await fileBrowserStore.open(workdirPath);
   },
 
-  async openPath(path) {
-    return await this.openSession({ path: String(path || "") });
+  async openPath(path, options = {}) {
+    return await this.openSession({
+      path: String(path || ""),
+      source: options?.source || "",
+      refresh: options?.refresh === true,
+    });
   },
 
   async openSession(payload = {}) {

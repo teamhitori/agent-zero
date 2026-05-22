@@ -838,7 +838,7 @@ const model = {
         if (target === "editor") {
           const { store: editorStore } = await import("/plugins/_editor/webui/editor-store.js");
           if (!this.storeHasPath(editorStore, path)) {
-            const session = await editorStore.openPath(path);
+            const session = await editorStore.openPath(path, { source: "file-browser" });
             if (!session || session.ok === false) {
               throw new Error(editorStore.error || "Markdown could not be opened.");
             }

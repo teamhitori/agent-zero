@@ -128,7 +128,7 @@ def _path_from_a0(path: str | Path) -> Path:
     return Path(raw if os.path.isabs(raw) else files.get_abs_path(raw)).expanduser()
 
 
-def allowed_roots(context_id: str = "") -> list[Path]:
+def allowed_roots(context_id: str = "", allow_base_dir: bool = False) -> list[Path]:
     project_helpers = _projects()
     roots = {
         WORKDIR.resolve(strict=False),
@@ -140,6 +140,8 @@ def allowed_roots(context_id: str = "") -> list[Path]:
     configured = str(_settings().get_settings().get("workdir_path") or "").strip()
     if configured:
         roots.add(_path_from_a0(configured).resolve(strict=False))
+    if allow_base_dir:
+        roots.add(Path(files.get_base_dir()).resolve(strict=False))
     return sorted(roots, key=lambda item: str(item))
 
 
@@ -155,10 +157,10 @@ def _settings() -> Any:
     return settings
 
 
-def normalize_path(path: str | Path, context_id: str = "") -> Path:
+def normalize_path(path: str | Path, context_id: str = "", allow_base_dir: bool = False) -> Path:
     candidate = _path_from_a0(path)
     resolved = candidate.resolve(strict=False)
-    roots = allowed_roots(context_id)
+    roots = allowed_roots(context_id, allow_base_dir=allow_base_dir)
     if not any(_is_relative_to(resolved, root) for root in roots):
         raise PermissionError("Document artifacts must stay inside the active project or workdir.")
     if candidate.exists():
@@ -236,8 +238,13 @@ def init_db(conn: sqlite3.Connection) -> None:
     )
 
 
-def register_document(path: str | Path, owner_id: str = "a0", context_id: str = "") -> dict[str, Any]:
-    resolved = normalize_path(path, context_id=context_id)
+def register_document(
+    path: str | Path,
+    owner_id: str = "a0",
+    context_id: str = "",
+    allow_base_dir: bool = False,
+) -> dict[str, Any]:
+    resolved = normalize_path(path, context_id=context_id, allow_base_dir=allow_base_dir)
     if not resolved.exists():
         raise FileNotFoundError(str(resolved))
     ext = normalize_extension(resolved.suffix.lstrip("."))

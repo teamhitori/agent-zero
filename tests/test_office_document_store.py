@@ -25,6 +25,7 @@ from plugins._editor.helpers import (
     markdown_sessions as editor_markdown_sessions,
     open_files_context,
 )
+from plugins._editor.api.editor_session import EditorSession
 from plugins._office.helpers import (
     artifact_editor,
     canvas_context,
@@ -92,6 +93,45 @@ def test_text_files_register_as_desktop_documents(office_state):
     assert doc["extension"] == "txt"
     assert "txt" in document_store.DESKTOP_TEXT_EXTENSIONS
     assert "txt" in desktop_session.OFFICIAL_EXTENSIONS
+
+
+def test_file_browser_can_register_runtime_root_markdown(office_state, monkeypatch):
+    runtime_root = office_state.state.parent / "runtime-root"
+    runtime_root.mkdir()
+    path = runtime_root / "AGENTS.md"
+    path.write_text("# Runtime Instructions\n", encoding="utf-8")
+    monkeypatch.setattr(document_store.files, "get_base_dir", lambda: str(runtime_root))
+
+    with pytest.raises(PermissionError, match="active project or workdir"):
+        document_store.register_document(path)
+
+    doc = document_store.register_document(path, allow_base_dir=True)
+
+    assert doc["basename"] == "AGENTS.md"
+    assert doc["path"] == str(path)
+
+
+def test_editor_file_browser_source_opens_runtime_root_markdown(office_state, monkeypatch):
+    runtime_root = office_state.state.parent / "runtime-root"
+    runtime_root.mkdir()
+    path = runtime_root / "AGENTS.md"
+    path.write_text("# Runtime Instructions\n", encoding="utf-8")
+    monkeypatch.setattr(document_store.files, "get_base_dir", lambda: str(runtime_root))
+    handler = EditorSession(app=None, thread_lock=None)
+    request = types.SimpleNamespace(headers={}, host_url="http://localhost/")
+
+    blocked = asyncio.run(handler.process({"action": "open", "path": str(path)}, request))
+    opened = asyncio.run(handler.process({
+        "action": "open",
+        "path": str(path),
+        "source": "file-browser",
+    }, request))
+
+    assert blocked["ok"] is False
+    assert "active project or workdir" in blocked["error"]
+    assert opened["ok"] is True
+    assert opened["title"] == "AGENTS.md"
+    assert opened["text"] == "# Runtime Instructions\n"
 
 
 @pytest.mark.parametrize(
