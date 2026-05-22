@@ -1,17 +1,34 @@
 import { createStore } from "/js/AlpineStore.js";
-import { callJsonApi } from "/js/api.js";
+import { callJsonApi, fetchApi } from "/js/api.js";
+import { store as modelConfigStore } from "/plugins/_model_config/webui/model-config-store.js";
 import {
   toastFrontendError,
   toastFrontendInfo,
   toastFrontendSuccess,
 } from "/components/notifications/notification-store.js";
 
+const MODEL_CONFIG_API = "/plugins/_model_config";
 const STATUS_API = "/plugins/_oauth/status";
 const START_DEVICE_LOGIN_API = "/plugins/_oauth/start_device_login";
 const POLL_DEVICE_LOGIN_API = "/plugins/_oauth/poll_device_login";
 const MODELS_API = "/plugins/_oauth/models";
 const DISCONNECT_API = "/plugins/_oauth/disconnect";
 const MAX_POLL_MS = 120000;
+const CODEX_PROVIDER = "codex_oauth";
+const MODEL_SLOTS = [
+  {
+    key: "chat_model",
+    title: "Main model",
+    description: "Primary model for chat, reasoning, and browser tasks.",
+    icon: "forum",
+  },
+  {
+    key: "utility_model",
+    title: "Utility model",
+    description: "Background model for summaries, memory, and prompt preparation.",
+    icon: "manufacturing",
+  },
+];
 
 function ensureConfig(config) {
   if (!config || typeof config !== "object") return null;
@@ -32,6 +49,30 @@ function ensureConfig(config) {
   return config;
 }
 
+function clone(value) {
+  return JSON.parse(JSON.stringify(value || {}));
+}
+
+function ensureModelSlot(config, key) {
+  if (!config[key] || typeof config[key] !== "object") config[key] = {};
+  config[key] = {
+    provider: "",
+    name: "",
+    api_base: "",
+    ctx_length: key === "utility_model" ? 128000 : 200000,
+    ctx_history: key === "chat_model" ? 0.7 : undefined,
+    ctx_input: key === "utility_model" ? 0.7 : undefined,
+    vision: key === "chat_model" ? true : undefined,
+    max_embeds: key === "chat_model" ? 10 : undefined,
+    rl_requests: 0,
+    rl_input: 0,
+    rl_output: 0,
+    kwargs: {},
+    ...config[key],
+  };
+  if (!config[key].kwargs || typeof config[key].kwargs !== "object") config[key].kwargs = {};
+}
+
 function messageOf(error) {
   return error instanceof Error ? error.message : String(error);
 }
@@ -44,13 +85,27 @@ export const store = createStore("oauthConfig", {
   disconnecting: false,
   loadingModels: false,
   models: [],
+  modelSlots: MODEL_SLOTS,
+  modelConfig: null,
+  modelConfigLoading: false,
+  modelConfigSaving: false,
+  modelConfigDirty: false,
+  modelSlotDirty: {
+    chat_model: false,
+    utility_model: false,
+  },
+  modelDropdown: {
+    chat_model: { open: false },
+    utility_model: { open: false },
+  },
   device: null,
   pollTimer: null,
   pollStartedAt: 0,
 
-  async init(config) {
+  async init(config, context = null) {
     this.bindConfig(config);
-    await this.loadStatus();
+    this.installSettingsHooks(context);
+    await Promise.all([this.loadStatus(), this.loadModelConfig()]);
   },
 
   cleanup() {
@@ -58,6 +113,15 @@ export const store = createStore("oauthConfig", {
     this.config = null;
     this.status = null;
     this.models = [];
+    this.modelConfig = null;
+    this.modelConfigLoading = false;
+    this.modelConfigSaving = false;
+    this.modelConfigDirty = false;
+    this.modelSlotDirty = { chat_model: false, utility_model: false };
+    this.modelDropdown = {
+      chat_model: { open: false },
+      utility_model: { open: false },
+    };
     this.device = null;
   },
 
@@ -136,6 +200,168 @@ export const store = createStore("oauthConfig", {
   callbackUrl() {
     const path = this.codex().callback_path || "/auth/callback";
     return `${window.location.origin}${path}`;
+  },
+
+  installSettingsHooks(context) {
+    if (!context || context.__oauthConfigHooksInstalled) return;
+
+    const originalSave = context.save.bind(context);
+    context.save = async () => {
+      context.error = null;
+      try {
+        await this.saveModelConfigIfDirty();
+      } catch (error) {
+        context.error = messageOf(error) || "Failed to save model selection.";
+        return;
+      }
+      await originalSave();
+    };
+
+    context.__oauthConfigHooksInstalled = true;
+  },
+
+  async loadModelConfig() {
+    if (this.modelConfigLoading) return;
+    this.modelConfigLoading = true;
+    try {
+      await modelConfigStore.ensureLoaded();
+      const response = await fetchApi(`${MODEL_CONFIG_API}/model_config_get`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({}),
+      });
+      const data = await response.json().catch(() => ({}));
+      const modelConfig = data.config && typeof data.config === "object" ? data.config : {};
+      ensureModelSlot(modelConfig, "chat_model");
+      ensureModelSlot(modelConfig, "utility_model");
+      this.modelConfig = modelConfig;
+      this.modelConfigDirty = false;
+      this.modelSlotDirty = { chat_model: false, utility_model: false };
+    } catch (error) {
+      this.modelConfig = null;
+      void toastFrontendError(messageOf(error), "OAuth Connections");
+    } finally {
+      this.modelConfigLoading = false;
+    }
+  },
+
+  modelSlot(key) {
+    if (!this.modelConfig) return {};
+    ensureModelSlot(this.modelConfig, key);
+    return this.modelConfig[key];
+  },
+
+  slotUsesCodex(key) {
+    return this.modelSlot(key).provider === CODEX_PROVIDER;
+  },
+
+  providerName(provider) {
+    if (!provider) return "Not configured";
+    const found = (modelConfigStore.chatProviders || []).find((item) => item.value === provider);
+    return found?.label || provider;
+  },
+
+  slotStatusLabel(key) {
+    const slot = this.modelSlot(key);
+    if (slot.provider === CODEX_PROVIDER) return "";
+    return `Currently ${this.providerName(slot.provider)}`;
+  },
+
+  markModelDirty(key) {
+    this.modelConfigDirty = true;
+    this.modelSlotDirty = { ...this.modelSlotDirty, [key]: true };
+  },
+
+  useCodexForSlot(key) {
+    const slot = this.modelSlot(key);
+    const previousProvider = slot.provider;
+    slot.provider = CODEX_PROVIDER;
+    slot.api_base = "";
+    if (previousProvider && previousProvider !== CODEX_PROVIDER) {
+      slot.name = "";
+    }
+    if (!slot.kwargs || typeof slot.kwargs !== "object") slot.kwargs = {};
+    this.markModelDirty(key);
+    if (this.models.length) {
+      this.openModelDropdown(key);
+    } else {
+      void this.loadModels({ openDropdown: key, silent: true });
+    }
+  },
+
+  copyMainToUtility() {
+    if (!this.modelConfig) return;
+    const main = this.modelSlot("chat_model");
+    const utility = this.modelSlot("utility_model");
+    utility.provider = CODEX_PROVIDER;
+    utility.name = main.name || "";
+    utility.api_base = main.api_base || "";
+    utility.kwargs = clone(main.kwargs || {});
+    this.markModelDirty("utility_model");
+  },
+
+  openModelDropdown(key) {
+    if (!this.slotUsesCodex(key)) return;
+    this.modelDropdown[key] = { ...this.modelDropdown[key], open: true };
+    if (!this.models.length && !this.loadingModels) {
+      void this.loadModels({ openDropdown: key, silent: true });
+    }
+  },
+
+  closeModelDropdown(key) {
+    this.modelDropdown[key] = { ...this.modelDropdown[key], open: false };
+  },
+
+  filteredModels(key) {
+    const query = String(this.modelSlot(key).name || "").trim().toLowerCase();
+    const models = this.models || [];
+    const filtered = query
+      ? models.filter((model) => String(model).toLowerCase().includes(query))
+      : models;
+    return filtered.slice(0, 80);
+  },
+
+  selectModel(key, model) {
+    const slot = this.modelSlot(key);
+    slot.provider = CODEX_PROVIDER;
+    slot.name = model;
+    this.markModelDirty(key);
+    this.closeModelDropdown(key);
+  },
+
+  validateModelConfig() {
+    if (!this.modelConfigDirty) return;
+    for (const slot of MODEL_SLOTS) {
+      if (!this.modelSlotDirty[slot.key]) continue;
+      const model = this.modelSlot(slot.key);
+      if (model.provider === CODEX_PROVIDER && !String(model.name || "").trim()) {
+        throw new Error(`Choose a ${slot.title} before saving.`);
+      }
+    }
+  },
+
+  async saveModelConfigIfDirty() {
+    if (!this.modelConfigDirty || !this.modelConfig) return;
+    this.validateModelConfig();
+    this.modelConfigSaving = true;
+    try {
+      const response = await fetchApi(`${MODEL_CONFIG_API}/model_config_set`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          project_name: "",
+          agent_profile: "",
+          config: this.modelConfig,
+        }),
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!data?.ok) throw new Error(data?.error || "Could not save model selection.");
+      this.modelConfigDirty = false;
+      this.modelSlotDirty = { chat_model: false, utility_model: false };
+      await modelConfigStore.refreshModelsSummary?.();
+    } finally {
+      this.modelConfigSaving = false;
+    }
   },
 
   async loadStatus() {
@@ -217,17 +443,18 @@ export const store = createStore("oauthConfig", {
     this.pollTimer = null;
   },
 
-  async loadModels() {
+  async loadModels({ openDropdown = "", silent = false } = {}) {
     if (this.loadingModels) return;
     this.loadingModels = true;
     try {
       const response = await callJsonApi(MODELS_API, {});
       if (!response?.ok) throw new Error(response?.error || "Could not load Codex models.");
       this.models = Array.isArray(response.models) ? response.models : [];
-      void toastFrontendSuccess("Codex models loaded.", "OAuth Connections");
+      if (openDropdown) this.openModelDropdown(openDropdown);
+      if (!silent) void toastFrontendSuccess("Codex models loaded.", "OAuth Connections");
     } catch (error) {
       this.models = [];
-      void toastFrontendError(messageOf(error), "OAuth Connections");
+      if (!silent) void toastFrontendError(messageOf(error), "OAuth Connections");
     } finally {
       this.loadingModels = false;
     }

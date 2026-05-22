@@ -5,13 +5,42 @@ from helpers import plugins
 class DiscoveryCardsExtension(Extension):
     """Injects discovery cards into the banners list."""
 
-    def _codex_oauth_connected(self) -> bool:
+    def _codex_oauth_status(self) -> dict:
         try:
             from plugins._oauth.helpers import codex
 
-            return bool(codex.status().get("connected"))
+            status = codex.status()
+            return status if isinstance(status, dict) else {}
         except Exception:
-            return False
+            return {}
+
+    def _codex_oauth_usage_windows(self, status: dict) -> list[dict]:
+        usage = status.get("usage") if isinstance(status, dict) else {}
+        if not isinstance(usage, dict) or not usage.get("available"):
+            return []
+
+        windows: list[dict] = []
+        for key, title in (("primary", "Session"), ("secondary", "Week")):
+            window = usage.get(key)
+            if not isinstance(window, dict):
+                continue
+            remaining = window.get("remaining_percent")
+            used = window.get("used_percent")
+            if remaining is None and used is not None:
+                try:
+                    remaining = max(0, min(100, 100 - float(used)))
+                except (TypeError, ValueError):
+                    remaining = None
+            if remaining is None:
+                continue
+            windows.append({
+                "key": key,
+                "title": title,
+                "label": window.get("label") or "",
+                "remaining_percent": remaining,
+                "reset_at": window.get("reset_at") or 0,
+            })
+        return windows
 
     async def execute(self, banners: list = [], frontend_context: dict = {}, **kwargs):
         # Optional logic: only show specific cards if plugins aren't already configured.
@@ -20,7 +49,8 @@ class DiscoveryCardsExtension(Extension):
         telegram_config = plugins.get_plugin_config("_telegram_integration") or {}
         email_config = plugins.get_plugin_config("_email_integration") or {}
         whatsapp_config = plugins.get_plugin_config("_whatsapp_integration") or {}
-        codex_oauth_connected = self._codex_oauth_connected()
+        codex_oauth_status = self._codex_oauth_status()
+        codex_oauth_connected = bool(codex_oauth_status.get("connected"))
 
         # 1. Plugin Hub Hero
         banners.append({
@@ -88,7 +118,7 @@ class DiscoveryCardsExtension(Extension):
             })
 
         # 5. Codex/ChatGPT OAuth
-        banners.append({
+        codex_oauth_card = {
             "id": "discovery-codex-oauth",
             "type": "hero",
             "placement": "after-features",
@@ -103,4 +133,9 @@ class DiscoveryCardsExtension(Extension):
             "dismissible": True,
             "priority": 40,
             "show_in_onboarding": True
-        })
+        }
+        if codex_oauth_connected:
+            usage_windows = self._codex_oauth_usage_windows(codex_oauth_status)
+            if usage_windows:
+                codex_oauth_card["usage_windows"] = usage_windows
+        banners.append(codex_oauth_card)
