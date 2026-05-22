@@ -6,7 +6,7 @@ from pathlib import Path
 import uuid
 from typing import Any
 
-from helpers import files, history
+from helpers import history
 from helpers.tool import Response, Tool
 from helpers.ws import NAMESPACE
 from helpers.ws_manager import ConnectionNotFoundError, get_shared_ws_manager
@@ -21,7 +21,6 @@ from plugins._a0_connector.helpers.ws_runtime import (
 
 COMPUTER_USE_OP_TIMEOUT = 180.0
 COMPUTER_USE_OP_EVENT = "connector_computer_use_op"
-COMPUTER_USE_CAPTURE_DIR = ("tmp", "_a0_connector", "computer_use", "captures")
 CAPTURE_TOKENS_ESTIMATE = 1500
 MAX_CAPTURE_ARTIFACT_SIZE_BYTES = 25 * 1024 * 1024
 REARM_REQUIRED_DEFAULT_MESSAGE = (
@@ -367,11 +366,10 @@ class ComputerUseRemote(Tool):
         )
 
     def _record_capture(self, data: dict[str, Any]) -> str:
-        data = self._materialize_capture_artifact(data)
-        _image_path, display_path = self._resolve_capture_path(data)
+        display_ref, resolved_capture_id = self._resolve_capture_ref(data)
         width = data.get("width", "?")
         height = data.get("height", "?")
-        capture_id = str(data.get("capture_id") or Path(display_path).stem or "?").strip()
+        capture_id = str(data.get("capture_id") or resolved_capture_id or "?").strip()
         coordinate_space = str(data.get("coordinate_space") or "normalized_global_screen").strip()
         summary = (
             f"Computer-use capture id={capture_id} {width}x{height}, "
@@ -385,7 +383,7 @@ class ComputerUseRemote(Tool):
                 summary = f"{summary} Fresh capture requested."
         content = [
             {"type": "text", "text": summary},
-            {"type": "image_url", "image_url": {"url": display_path}},
+            {"type": "image_url", "image_url": {"url": display_ref}},
         ]
         raw_message = history.RawMessage(raw_content=content, preview=summary)
         self.agent.hist_add_message(False, content=raw_message, tokens=CAPTURE_TOKENS_ESTIMATE)
@@ -413,6 +411,26 @@ class ComputerUseRemote(Tool):
                 message.summary = ""
             if hasattr(message, "calculate_tokens"):
                 message.tokens = message.calculate_tokens()
+
+    def _resolve_capture_ref(self, data: dict[str, Any]) -> tuple[str, str]:
+        artifact = data.get("artifact")
+        if isinstance(artifact, dict) and str(artifact.get("encoding", "")).strip().lower() == "base64":
+            encoded = str(artifact.get("data") or "")
+            if encoded:
+                estimated_size = _estimated_base64_decoded_size(encoded)
+                if estimated_size > MAX_CAPTURE_ARTIFACT_SIZE_BYTES:
+                    raise RuntimeError(
+                        "Computer-use capture artifact is too large to attach safely "
+                        f"({estimated_size} bytes, limit {MAX_CAPTURE_ARTIFACT_SIZE_BYTES} bytes)."
+                    )
+                mime = str(artifact.get("mime") or "image/png").strip()
+                if not mime.startswith("image/"):
+                    mime = "image/png"
+                filename = _safe_filename(str(artifact.get("filename") or "computer-use-capture.png"))
+                return f"data:{mime};base64,{encoded}", Path(filename).stem
+
+        image_path, display_path = self._resolve_capture_path(data)
+        return display_path, image_path.stem
 
     def _collect_capture_messages(self, history_obj: Any) -> list[Any]:
         messages: list[Any] = []
@@ -478,43 +496,6 @@ class ComputerUseRemote(Tool):
         raise FileNotFoundError(
             f"Capture artifact was not found in any advertised path: {candidates!r}"
         )
-
-    def _materialize_capture_artifact(self, data: dict[str, Any]) -> dict[str, Any]:
-        artifact = data.get("artifact")
-        if not isinstance(artifact, dict):
-            return data
-        if str(artifact.get("encoding", "")).strip().lower() != "base64":
-            return data
-
-        encoded = str(artifact.get("data") or "")
-        if not encoded:
-            return data
-
-        estimated_size = _estimated_base64_decoded_size(encoded)
-        if estimated_size > MAX_CAPTURE_ARTIFACT_SIZE_BYTES:
-            raise RuntimeError(
-                "Computer-use capture artifact is too large to materialize safely "
-                f"({estimated_size} bytes, limit {MAX_CAPTURE_ARTIFACT_SIZE_BYTES} bytes)."
-            )
-
-        filename = _safe_filename(str(artifact.get("filename") or "computer-use-capture.png"))
-        context_id = str(getattr(getattr(self.agent, "context", None), "id", "") or "default")
-        target_relative = str(Path(*COMPUTER_USE_CAPTURE_DIR, context_id, filename))
-        target_path = Path(files.get_abs_path(target_relative))
-        try:
-            files.write_file_base64(target_relative, encoded)
-        except Exception as exc:
-            target_path.unlink(missing_ok=True)
-            raise RuntimeError("Computer-use capture artifact could not be decoded.") from exc
-
-        materialized = dict(data)
-        materialized.pop("artifact", None)
-        local_path = str(target_path)
-        materialized["path"] = local_path
-        materialized["a0_path"] = files.normalize_a0_path(local_path)
-        materialized.setdefault("capture_path", local_path)
-        materialized.setdefault("capture_id", target_path.stem)
-        return materialized
 
     def _coerce_int(self, value: object, *, name: str) -> int:
         try:
