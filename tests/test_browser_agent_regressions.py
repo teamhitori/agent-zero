@@ -1122,6 +1122,11 @@ def test_browser_viewer_uses_cdp_screencast_transport():
     assert '"snapshot": snapshot' in ws_browser
     assert 'const BROWSER_SNAPSHOT_META_KEY = "browser_snapshot";' in browser_tool_handler
     assert "staticScreenshotUri(kvps)" in browser_tool_handler
+    assert "/components/modals/image-viewer/image-viewer-store.js" in browser_tool_handler
+    assert "function openStaticScreenshot(uri = \"\")" in browser_tool_handler
+    assert "imageViewerStore.open(src, { name: \"Browser screenshot\" });" in browser_tool_handler
+    assert "if (staticUri) {" in browser_tool_handler
+    assert "openStaticScreenshot(staticUri);" in browser_tool_handler
     assert "delete displayKvps[BROWSER_SNAPSHOT_META_KEY];" in browser_tool_handler
     assert "startBrowserScreenshotPreview(button, image, resolveBrowserPayload)" in browser_tool_handler
     assert "FRAME_FALLBACK_SCREENSHOT_SECONDS" not in ws_browser
