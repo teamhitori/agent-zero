@@ -2,6 +2,7 @@ import { createStore } from "/js/AlpineStore.js";
 import { callJsonApi } from "/js/api.js";
 import { getNamespacedClient } from "/js/websocket.js";
 import { store as fileBrowserStore } from "/components/modals/file-browser/file-browser-store.js";
+import { placeSurfaceModalHeaderAction } from "/js/surfaces.js";
 import {
   buildMarkdownPages,
   isExternalHref,
@@ -1591,9 +1592,9 @@ const model = {
     if (!header || header.querySelector(".editor-header-actions")) return () => {};
 
     const root = document.createElement("div");
-    root.className = "editor-header-actions";
+    root.className = "editor-header-actions surface-modal-new-action";
     root.innerHTML = `
-      <button type="button" class="editor-header-new-button" aria-haspopup="menu" aria-expanded="false">
+      <button type="button" class="editor-header-new-button surface-modal-new-button" aria-haspopup="menu" aria-expanded="false">
         <span class="material-symbols-outlined" aria-hidden="true">add</span>
         <span>New</span>
         <span class="material-symbols-outlined editor-new-chevron" aria-hidden="true">expand_more</span>
@@ -1642,12 +1643,7 @@ const model = {
     document.addEventListener("click", onMarkdownClick);
     document.addEventListener("keydown", onMarkdownKeydown);
 
-    const firstHeaderAction = header.querySelector(".modal-close");
-    if (firstHeaderAction) {
-      firstHeaderAction.insertAdjacentElement("beforebegin", root);
-    } else {
-      header.appendChild(root);
-    }
+    placeSurfaceModalHeaderAction(header, root, "new");
 
     setOpen(false);
     return () => {
@@ -1666,10 +1662,9 @@ const model = {
     inner.dataset.editorModalReady = "1";
     inner.classList.add("editor-modal");
     const cleanup = [];
-    const closeButton = inner.querySelector(".modal-close");
     const focusButton = document.createElement("button");
     focusButton.type = "button";
-    focusButton.className = "modal-dock-button editor-modal-focus-button";
+    focusButton.className = "surface-button editor-modal-focus-button";
     focusButton.innerHTML = '<span class="material-symbols-outlined" aria-hidden="true">fullscreen</span>';
     const updateFocusButton = (active) => {
       const label = active ? "Restore size" : "Focus mode";
@@ -1684,11 +1679,7 @@ const model = {
       updateFocusButton(active);
     };
     focusButton.addEventListener("click", onFocusClick);
-    if (closeButton) {
-      closeButton.insertAdjacentElement("beforebegin", focusButton);
-    } else {
-      header.appendChild(focusButton);
-    }
+    placeSurfaceModalHeaderAction(header, focusButton, "window");
     cleanup.push(() => focusButton.removeEventListener("click", onFocusClick));
     cleanup.push(() => focusButton.remove());
 

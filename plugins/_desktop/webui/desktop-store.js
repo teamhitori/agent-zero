@@ -2,7 +2,7 @@ import { createStore } from "/js/AlpineStore.js";
 import { callJsonApi } from "/js/api.js";
 import { getNamespacedClient } from "/js/websocket.js";
 import { store as fileBrowserStore } from "/components/modals/file-browser/file-browser-store.js";
-import { handleUrlIntent } from "/js/surfaces.js";
+import { handleUrlIntent, placeSurfaceModalHeaderAction } from "/js/surfaces.js";
 
 const officeSocket = getNamespacedClient("/ws");
 officeSocket.addHandlers(["ws_webui"]);
@@ -2337,9 +2337,9 @@ const model = {
     if (!header || header.querySelector(".office-header-actions")) return () => {};
 
     const root = globalThis.document.createElement("div");
-    root.className = "office-header-actions";
+    root.className = "office-header-actions surface-modal-new-action";
     root.innerHTML = `
-      <button type="button" class="office-header-new-button" aria-haspopup="menu" aria-expanded="false">
+      <button type="button" class="office-header-new-button surface-modal-new-button" aria-haspopup="menu" aria-expanded="false">
         <span class="material-symbols-outlined" aria-hidden="true">add</span>
         <span>New</span>
         <span class="material-symbols-outlined office-new-chevron" aria-hidden="true">expand_more</span>
@@ -2396,14 +2396,7 @@ const model = {
     globalThis.document.addEventListener("click", onDocumentClick);
     globalThis.document.addEventListener("keydown", onDocumentKeydown);
 
-    const firstHeaderAction = header.querySelector(
-      ".modal-surface-switcher, .modal-dock-button, .office-modal-focus-button, .modal-close",
-    );
-    if (firstHeaderAction) {
-      firstHeaderAction.insertAdjacentElement("beforebegin", root);
-    } else {
-      header.appendChild(root);
-    }
+    placeSurfaceModalHeaderAction(header, root, "new");
 
     setOpen(false);
     return () => {
@@ -2501,20 +2494,16 @@ const model = {
 
     const focusButton = globalThis.document.createElement("button");
     focusButton.type = "button";
-    focusButton.className = "modal-dock-button office-modal-focus-button";
+    focusButton.className = "surface-button office-modal-focus-button";
     focusButton.innerHTML = '<span class="material-symbols-outlined" aria-hidden="true">fullscreen</span>';
     const updateFocusButton = (active) => {
       const label = active ? "Restore size" : "Focus mode";
       focusButton.setAttribute("aria-label", label);
+      focusButton.setAttribute("title", label);
       focusButton.querySelector(".material-symbols-outlined").textContent = active ? "fullscreen_exit" : "fullscreen";
     };
     updateFocusButton(false);
-    const closeButton = inner.querySelector(".modal-close");
-    if (closeButton) {
-      closeButton.insertAdjacentElement("beforebegin", focusButton);
-    } else {
-      header.appendChild(focusButton);
-    }
+    placeSurfaceModalHeaderAction(header, focusButton, "window");
     cleanup.push(() => focusButton.remove());
 
     const setFocusMode = (enabled) => {
