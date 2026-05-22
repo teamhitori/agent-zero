@@ -13,7 +13,7 @@ triggers:
   - "terminal app"
   - "use the OS"
 allowed_tools:
-  - document_artifact
+  - office_artifact
   - code_execution_tool
 ---
 
@@ -25,7 +25,7 @@ Use the Desktop as a full Linux GUI when the user explicitly needs a visual work
 
 The Desktop is an observe-act-verify control surface. Use this decision hierarchy:
 
-1. Prefer structured tools such as `document_artifact` for deterministic file creation, reads, and edits.
+1. Prefer structured tools such as `office_artifact` for deterministic Office file creation, reads, and edits.
 2. Prefer app-native helpers for visible live edits, such as `desktopctl.sh calc-set-cell` for Calc/UNO spreadsheet changes.
 3. Prefer launcher commands, window focus, keyboard shortcuts, menus, paste, and save commands.
 4. Use coordinate clicks only as a last resort, and only after a fresh Desktop observation.

@@ -22,7 +22,7 @@ from helpers.task_scheduler import (
     serialize_task_plan,
 )
 from plugins._memory.api.memory_dashboard import MemoryDashboard
-from plugins._office.helpers import libreoffice_desktop
+from plugins._desktop.helpers import desktop_session
 
 
 @pytest.fixture
@@ -273,21 +273,21 @@ class FakeProcess:
 
 def test_desktop_session_env_uses_session_timezone(isolated_localization, tmp_path):
     set_test_timezone("Europe/Rome")
-    session = libreoffice_desktop.DesktopSession(
-        session_id=libreoffice_desktop.SYSTEM_SESSION_ID,
-        file_id=libreoffice_desktop.SYSTEM_FILE_ID,
+    session = desktop_session.DesktopSession(
+        session_id=desktop_session.SYSTEM_SESSION_ID,
+        file_id=desktop_session.SYSTEM_FILE_ID,
         extension="desktop",
         path=str(tmp_path),
         title="Desktop",
         display=120,
         xpra_port=14500,
-        token=libreoffice_desktop.SYSTEM_SESSION_ID,
+        token=desktop_session.SYSTEM_SESSION_ID,
         url="/desktop/session/agent-zero-desktop/index.html",
         profile_dir=tmp_path / "profile",
         timezone="America/New_York",
     )
 
-    env = libreoffice_desktop.LibreOfficeDesktopManager()._session_env(session)
+    env = desktop_session.DesktopSessionManager()._session_env(session)
 
     assert env["TZ"] == "America/New_York"
 
@@ -298,41 +298,41 @@ def test_desktop_timezone_sync_restarts_active_system_desktop(
     tmp_path,
 ):
     set_test_timezone("America/New_York")
-    manager = libreoffice_desktop.LibreOfficeDesktopManager()
-    old_session = libreoffice_desktop.DesktopSession(
-        session_id=libreoffice_desktop.SYSTEM_SESSION_ID,
-        file_id=libreoffice_desktop.SYSTEM_FILE_ID,
+    manager = desktop_session.DesktopSessionManager()
+    old_session = desktop_session.DesktopSession(
+        session_id=desktop_session.SYSTEM_SESSION_ID,
+        file_id=desktop_session.SYSTEM_FILE_ID,
         extension="desktop",
         path=str(tmp_path),
         title="Desktop",
         display=120,
         xpra_port=14500,
-        token=libreoffice_desktop.SYSTEM_SESSION_ID,
+        token=desktop_session.SYSTEM_SESSION_ID,
         url="/desktop/session/agent-zero-desktop/index.html",
         profile_dir=tmp_path / "profile-old",
         timezone="Europe/Rome",
         processes={"xpra": FakeProcess()},
     )
-    replacement = libreoffice_desktop.DesktopSession(
-        session_id=libreoffice_desktop.SYSTEM_SESSION_ID,
-        file_id=libreoffice_desktop.SYSTEM_FILE_ID,
+    replacement = desktop_session.DesktopSession(
+        session_id=desktop_session.SYSTEM_SESSION_ID,
+        file_id=desktop_session.SYSTEM_FILE_ID,
         extension="desktop",
         path=str(tmp_path),
         title="Desktop",
         display=120,
         xpra_port=14500,
-        token=libreoffice_desktop.SYSTEM_SESSION_ID,
+        token=desktop_session.SYSTEM_SESSION_ID,
         url="/desktop/session/agent-zero-desktop/index.html",
         profile_dir=tmp_path / "profile-new",
         timezone="America/New_York",
         processes={"xpra": FakeProcess()},
     )
-    manager._sessions[libreoffice_desktop.SYSTEM_SESSION_ID] = old_session
-    restarted: list[libreoffice_desktop.DesktopSession] = []
+    manager._sessions[desktop_session.SYSTEM_SESSION_ID] = old_session
+    restarted: list[desktop_session.DesktopSession] = []
 
     def fake_restart(session):
         restarted.append(session)
-        manager._sessions[libreoffice_desktop.SYSTEM_SESSION_ID] = replacement
+        manager._sessions[desktop_session.SYSTEM_SESSION_ID] = replacement
         return replacement
 
     monkeypatch.setattr(manager, "_restart_system_desktop_for_timezone_locked", fake_restart)
@@ -342,7 +342,7 @@ def test_desktop_timezone_sync_restarts_active_system_desktop(
     assert result == {
         "ok": True,
         "restarted": True,
-        "session_id": libreoffice_desktop.SYSTEM_SESSION_ID,
+        "session_id": desktop_session.SYSTEM_SESSION_ID,
         "timezone": "America/New_York",
     }
     assert restarted == [old_session]

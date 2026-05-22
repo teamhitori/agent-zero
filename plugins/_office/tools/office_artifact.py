@@ -7,14 +7,16 @@ from typing import Any
 from helpers.tool import Response, Tool
 from plugins._office.helpers import artifact_editor, document_store, libreoffice
 
+OFFICE_EXTENSIONS = document_store.OPEN_DOCUMENT_EXTENSIONS | document_store.OOXML_EXTENSIONS
 
-class DocumentArtifact(Tool):
+
+class OfficeArtifact(Tool):
     async def execute(
         self,
         action: str = "",
         kind: str = "document",
         title: str = "Untitled",
-        format: str = "md",
+        format: str = "",
         content: str = "",
         path: str = "",
         file_id: str = "",
@@ -30,10 +32,9 @@ class DocumentArtifact(Tool):
         max_chars: int | str = 12000,
         open_in_canvas: bool = False,
         open_in_desktop: bool = False,
-        method: str = "",
         **kwargs: Any,
     ) -> Response:
-        action = str(action or method or self.method or "status").strip().lower().replace("-", "_")
+        action = str(action or "status").strip().lower().replace("-", "_")
         open_in_canvas = _truthy(
             open_in_canvas
             or kwargs.get("open_canvas")
@@ -46,10 +47,11 @@ class DocumentArtifact(Tool):
         )
         try:
             if action == "create":
+                fmt = _default_office_format(kind, format)
                 doc = document_store.create_document(
                     kind=kind,
                     title=title,
-                    fmt=format,
+                    fmt=fmt,
                     content=content,
                     path=path,
                     context_id=self._context_id(),
@@ -58,18 +60,18 @@ class DocumentArtifact(Tool):
                     validation = libreoffice.validate_odf(doc["path"])
                     if not validation.get("ok"):
                         return Response(
-                            message=f"document_artifact create failed: {validation.get('error')}",
+                            message=f"{self.name} create failed: {validation.get('error')}",
                             break_loop=False,
                         )
                 if doc["extension"] == "docx":
                     validation = libreoffice.validate_docx(doc["path"])
                     if not validation.get("ok"):
                         return Response(
-                            message=f"document_artifact create failed: {validation.get('error')}",
+                            message=f"{self.name} create failed: {validation.get('error')}",
                             break_loop=False,
                         )
                 return self._document_response(
-                    "Created document artifact.",
+                    "Created office artifact.",
                     doc,
                     action=action,
                     open_in_canvas=open_in_canvas,
@@ -78,7 +80,7 @@ class DocumentArtifact(Tool):
             if action == "open":
                 doc = self._document_from_input(file_id=file_id, path=path)
                 return self._document_response(
-                    "Opened document artifact.",
+                    "Opened office artifact.",
                     doc,
                     action=action,
                     open_in_canvas=open_in_canvas,
@@ -146,8 +148,9 @@ class DocumentArtifact(Tool):
                     return Response(message="version_id is required for restore_version.", break_loop=False)
                 doc = self._document_from_input(file_id=file_id, path=path)
                 restored = document_store.restore_version(doc["file_id"], int(version_id))
+                _ensure_office_doc(restored)
                 return self._document_response(
-                    "Restored document artifact version.",
+                    "Restored office artifact version.",
                     restored,
                     action=action,
                     open_in_canvas=open_in_canvas,
@@ -157,6 +160,7 @@ class DocumentArtifact(Tool):
                 doc = self._document_from_input(file_id=file_id, path=path)
                 target_format = str(kwargs.get("target_format") or kwargs.get("export_format") or "").lower().lstrip(".")
                 if target_format and target_format != doc["extension"]:
+                    _ensure_office_format(target_format, "target_format")
                     result = libreoffice.convert_document(doc["path"], target_format)
                     if result.get("ok"):
                         payload = {
@@ -173,7 +177,7 @@ class DocumentArtifact(Tool):
                             open_in_desktop=open_in_desktop,
                         )
                     return Response(
-                        message=f"document_artifact export failed: {result.get('error')}",
+                        message=f"{self.name} export failed: {result.get('error')}",
                         break_loop=False,
                         additional=self._additional(
                             doc,
@@ -183,7 +187,7 @@ class DocumentArtifact(Tool):
                         ),
                     )
                 return self._document_response(
-                    "Document artifact export path is ready.",
+                    "Office artifact export path is ready.",
                     doc,
                     action=action,
                     open_in_canvas=open_in_canvas,
@@ -191,14 +195,14 @@ class DocumentArtifact(Tool):
                 )
             if action == "status":
                 return self._json_response({"ok": True, "action": action, "status": libreoffice.collect_status()}, action=action)
-            return Response(message=f"Unknown document_artifact action: {action}", break_loop=False)
+            return Response(message=f"Unknown {self.name} action: {action}", break_loop=False)
         except Exception as exc:
-            return Response(message=f"document_artifact {action} failed: {exc}", break_loop=False)
+            return Response(message=f"{self.name} {action} failed: {exc}", break_loop=False)
 
     def get_log_object(self):
         return self.agent.context.log.log(
             type="tool",
-            heading=f"icon://description {self.agent.agent_name}: Using document artifact",
+            heading=f"icon://description {self.agent.agent_name}: Using office artifact",
             content="",
             kvps={**self.args, "_tool_name": self.name},
             _tool_name=self.name,
@@ -206,9 +210,9 @@ class DocumentArtifact(Tool):
 
     def _document_from_input(self, file_id: str = "", path: str = "") -> dict[str, Any]:
         if file_id:
-            return document_store.get_document(file_id)
+            return _ensure_office_doc(document_store.get_document(file_id))
         if path:
-            return document_store.register_document(path, context_id=self._context_id())
+            return _ensure_office_doc(document_store.register_document(path, context_id=self._context_id()))
         raise ValueError("file_id or path is required")
 
     def _context_id(self) -> str:
@@ -279,7 +283,7 @@ class DocumentArtifact(Tool):
             }
         return {
             "_tool_name": self.name,
-            "canvas_surface": "editor" if doc["extension"] == "md" else "desktop",
+            "canvas_surface": "desktop",
             "action": action,
             "open_in_canvas": bool(open_in_canvas),
             "open_in_desktop": bool(open_in_desktop),
@@ -311,3 +315,31 @@ def _truthy(value: Any) -> bool:
     if isinstance(value, (int, float)):
         return value != 0
     return str(value).strip().lower() in {"1", "true", "yes", "y", "on"}
+
+
+def _default_office_format(kind: str, fmt: str = "") -> str:
+    normalized = str(fmt or "").strip().lower().lstrip(".")
+    if not normalized:
+        normalized_kind = str(kind or "").strip().lower()
+        if normalized_kind in {"spreadsheet", "sheet", "calc"}:
+            normalized = "ods"
+        elif normalized_kind in {"presentation", "slides", "deck", "impress"}:
+            normalized = "odp"
+        else:
+            normalized = "odt"
+    return _ensure_office_format(normalized, "format")
+
+
+def _ensure_office_format(fmt: str, label: str = "format") -> str:
+    normalized = str(fmt or "").strip().lower().lstrip(".")
+    if normalized not in OFFICE_EXTENSIONS:
+        raise ValueError(
+            f"{label} must be an Office format ({', '.join(sorted(OFFICE_EXTENSIONS))}); "
+            "use text_editor for Markdown and plain text files."
+        )
+    return normalized
+
+
+def _ensure_office_doc(doc: dict[str, Any]) -> dict[str, Any]:
+    _ensure_office_format(str(doc.get("extension") or ""), "document extension")
+    return doc

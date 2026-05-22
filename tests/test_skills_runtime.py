@@ -253,7 +253,7 @@ def test_skill_runtime_does_not_alias_old_office_skill_references():
 
 def test_builtin_plugin_skill_delete_is_rejected_before_filesystem_delete():
     with pytest.raises(PermissionError, match="Built-in plugin skills cannot be deleted"):
-        runtime.delete_skill("/a0/plugins/_office/skills/document-artifacts")
+        runtime.delete_skill("/a0/plugins/_office/skills/office-artifacts")
 
 
 def test_invalid_skill_frontmatter_reports_yaml_errors():

@@ -3,13 +3,13 @@ import {
   drawProcessStep,
 } from "/js/messages.js";
 
-export default async function registerDocumentArtifactHandler(extData) {
-  if (extData?.tool_name === "document_artifact") {
-    extData.handler = drawDocumentArtifactTool;
+export default async function registerOfficeArtifactHandler(extData) {
+  if (extData?.tool_name === "office_artifact") {
+    extData.handler = drawOfficeArtifactTool;
   }
 }
 
-function drawDocumentArtifactTool({
+function drawOfficeArtifactTool({
   id,
   type,
   heading,
@@ -26,7 +26,7 @@ function drawDocumentArtifactTool({
   return drawProcessStep({
     id,
     title,
-    code: "DOC",
+    code: "OFF",
     classes: undefined,
     kvps: displayKvps,
     content,
