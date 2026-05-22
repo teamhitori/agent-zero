@@ -79,6 +79,7 @@ sys.modules.setdefault("plugins._model_config.helpers.model_config", _model_conf
 def anyio_backend():
     return "asyncio"
 
+from helpers import ephemeral_images
 from helpers.errors import RepairableException
 from plugins._browser.helpers.config import (
     build_browser_launch_config,
@@ -1808,12 +1809,10 @@ async def test_browser_tool_records_static_history_screenshot(monkeypatch, tmp_p
                     },
                 }
             if method == "screenshot_file":
-                Path(kwargs["path"]).parent.mkdir(parents=True, exist_ok=True)
-                Path(kwargs["path"]).write_bytes(b"jpeg")
                 return {
                     "browser_id": args[0],
-                    "path": kwargs["path"],
-                    "a0_path": "/a0/usr/chats/chat/browser/screenshots/open.jpg",
+                    "ephemeral": True,
+                    "ephemeral_ref": "a0-ephemeral-image://fake",
                     "mime": "image/jpeg",
                     "state": {"id": args[0], "context_id": "browser-context"},
                 }
@@ -1861,11 +1860,13 @@ async def test_browser_tool_records_static_history_screenshot(monkeypatch, tmp_p
     assert calls[1][1] == (1,)
     assert calls[1][2]["quality"] == browser_tool_module.HISTORY_SCREENSHOT_QUALITY
     assert calls[1][2]["full_page"] is False
-    assert Path(calls[1][2]["path"]).parent == tmp_path / "usr" / "chats" / "chat" / "browser" / "screenshots"
-    assert Path(calls[1][2]["path"]).read_bytes() == b"jpeg"
-    assert log.updates[-1]["Screenshot"].startswith("img://")
+    assert calls[1][2]["path"] == ""
+    assert "Screenshot" not in log.updates[-1]
     assert log.updates[-1]["browser_snapshot"]["browser_id"] == 1
-    assert log.updates[-1]["browser_snapshot"]["context_id"] == "browser-context"
+    assert log.updates[-1]["browser_snapshot"]["context_id"] == "chat"
+    assert log.updates[-1]["browser_snapshot"]["browser_context_id"] == "browser-context"
+    assert log.updates[-1]["browser_snapshot"]["ephemeral"] is True
+    assert log.updates[-1]["browser_snapshot"]["ephemeral_ref"] == "a0-ephemeral-image://fake"
 
 
 @pytest.mark.anyio
@@ -2393,7 +2394,7 @@ async def test_browser_runtime_remounts_initial_changed_viewport():
 
 
 @pytest.mark.anyio
-async def test_browser_runtime_screenshot_file_writes_without_base64(monkeypatch, tmp_path):
+async def test_browser_runtime_screenshot_file_defaults_to_ephemeral_ref(monkeypatch, tmp_path):
     screenshot_calls = []
 
     def fake_get_abs_path(*parts):
@@ -2411,8 +2412,9 @@ async def test_browser_runtime_screenshot_file_writes_without_base64(monkeypatch
 
         async def screenshot(self, **kwargs):
             screenshot_calls.append(kwargs)
-            Path(kwargs["path"]).parent.mkdir(parents=True, exist_ok=True)
-            Path(kwargs["path"]).write_bytes(b"image-bytes")
+            if kwargs.get("path"):
+                Path(kwargs["path"]).parent.mkdir(parents=True, exist_ok=True)
+                Path(kwargs["path"]).write_bytes(b"image-bytes")
             return b"image-bytes"
 
         async def title(self):
@@ -2427,21 +2429,23 @@ async def test_browser_runtime_screenshot_file_writes_without_base64(monkeypatch
 
     result = await core.screenshot_file(5, quality=500)
 
-    path = Path(result["path"])
-    assert path.exists()
-    assert path.parent == tmp_path / "tmp" / "browser" / "screenshots" / "ctx_id"
-    assert path.name.startswith("browser-5-")
-    assert path.suffix == ".jpg"
-    assert result["a0_path"].startswith("/a0/tmp/browser/screenshots/ctx_id/browser-5-")
+    assert "path" not in result
+    assert "a0_path" not in result
+    assert result["context_id"] == "ctx/id"
     assert result["mime"] == "image/jpeg"
+    assert result["ephemeral"] is True
+    assert result["ephemeral_ref"].startswith(ephemeral_images.REF_PREFIX)
     assert result["vision_load"] == {
         "tool_name": "vision_load",
-        "tool_args": {"paths": [result["path"]]},
+        "tool_args": {"paths": [result["ephemeral_ref"]]},
     }
     assert "image" not in result
+    assert not list((tmp_path / "tmp" / "browser" / "screenshots").rglob("*.jpg"))
     assert screenshot_calls[-1]["type"] == "jpeg"
     assert screenshot_calls[-1]["quality"] == 95
     assert screenshot_calls[-1]["full_page"] is False
+    assert "path" not in screenshot_calls[-1]
+    assert ephemeral_images.consume_image(result["ephemeral_ref"], context_id="ctx/id").data_url == "data:image/jpeg;base64,aW1hZ2UtYnl0ZXM="
 
     png_path = tmp_path / "custom.png"
     png_result = await core.screenshot_file(5, quality=1, full_page=True, path=str(png_path))
@@ -2453,6 +2457,51 @@ async def test_browser_runtime_screenshot_file_writes_without_base64(monkeypatch
         "type": "png",
         "full_page": True,
     }
+
+
+@pytest.mark.anyio
+async def test_vision_load_consumes_ephemeral_browser_refs(monkeypatch):
+    import tools.vision_load as vision_load_module
+
+    monkeypatch.setattr(
+        vision_load_module.plugins,
+        "get_plugin_config",
+        lambda *args, **kwargs: {"chat_model": {"max_embeds": 10}},
+    )
+
+    tool_results = []
+    messages = []
+    updates = []
+    agent = SimpleNamespace(
+        context=SimpleNamespace(id="ctx-vision"),
+        agent_name="Agent 0",
+        hist_add_tool_result=lambda *args, **kwargs: tool_results.append((args, kwargs)),
+        hist_add_message=lambda *args, **kwargs: messages.append((args, kwargs)),
+    )
+    ref = ephemeral_images.put_image(
+        context_id="ctx-vision",
+        mime="image/jpeg",
+        data=SMALL_JPEG_10X10,
+        name="browser-shot.jpg",
+    )
+    tool = vision_load_module.VisionLoad(
+        agent=agent,
+        name="vision_load",
+        method=None,
+        args={"paths": [ref]},
+        message="",
+        loop_data=None,
+    )
+    tool.log = SimpleNamespace(id="vision-log", update=lambda **kwargs: updates.append(kwargs))
+
+    response = await tool.execute(paths=[ref])
+    await tool.after_execution(response)
+
+    assert ephemeral_images.get_image(ref, context_id="ctx-vision") is None
+    assert tool.loaded_paths == ["browser-shot.jpg"]
+    raw_message = messages[0][1]["content"]
+    assert raw_message.raw_content[0]["image_url"]["url"] == f"data:image/jpeg;base64,{SMALL_JPEG_10X10}"
+    assert updates[-1]["result"] == "1 images loaded, 0 skipped"
 
 
 @pytest.mark.anyio

@@ -20,7 +20,7 @@ Workflow:
 - For same-page controls that are easier to identify structurally, `click`, `type`, `submit`, `type_submit`, `scroll`, `select_option`, `set_checked`, and `upload_file` may use `selector` instead of `ref`; the tool resolves the selector through `content` first.
 - `click` with `x`/`y` and no `ref` is treated as a coordinate mouse click. `type` with text and no `ref` types into the currently focused element. `key_chord` accepts either `["Control", "A"]` or `"CTRL+A"`.
 - `navigate` reuses an existing `browser_id` and is preferred for serial browsing.
-- Screenshots are explicit only; the browser does not automatically load screenshots. Call `vision_load` with the returned path before reasoning visually.
+- Screenshots are explicit only; the browser does not automatically load screenshots. Call `vision_load` with the returned `vision_load.tool_args.paths` value before reasoning visually. When no `path` is requested, browser screenshots are ephemeral refs rather than conserved files.
 - Keep the tab set small; close pages after extracting what you need.
 
 `multi` is only a browser action: use `tool_name: "browser"` with `tool_args.action: "multi"`. Never use `tool_name: "multi"`.

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import base64
 import hashlib
 import re
 import uuid
@@ -10,7 +9,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
-from helpers import files
+from helpers import ephemeral_images
 
 try:
     from helpers.ws import NAMESPACE
@@ -40,10 +39,8 @@ from plugins._browser.helpers.url import normalize_url
 
 BROWSER_OP_EVENT = "connector_browser_op"
 BROWSER_OP_TIMEOUT = 120.0
-HOST_BROWSER_SCREENSHOT_DIR = ("tmp", "browser", "host-screenshots")
 CONTENT_HELPER_PATH = Path(__file__).resolve().parents[1] / "assets" / "browser-page-content.js"
 MAX_ARTIFACT_SIZE_BYTES = 25 * 1024 * 1024
-BASE64_DECODE_CHARS_PER_CHUNK = 64 * 1024
 HOST_BROWSER_PRIVACY_POLICY_KEY = getattr(
     browser_config,
     "HOST_BROWSER_PRIVACY_POLICY_KEY",
@@ -431,26 +428,30 @@ class ConnectorBrowserRuntime:
         estimated_size = _estimated_base64_decoded_size(data)
         if estimated_size > MAX_ARTIFACT_SIZE_BYTES:
             raise RuntimeError(
-                "Host browser artifact is too large to materialize safely "
+                "Host browser artifact is too large to attach safely "
                 f"({estimated_size} bytes, limit {MAX_ARTIFACT_SIZE_BYTES} bytes)."
             )
         filename = _safe_filename(str(artifact.get("filename") or "host-browser.jpg"))
-        target_dir = Path(files.get_abs_path(*HOST_BROWSER_SCREENSHOT_DIR, self.context_id))
-        target_dir.mkdir(parents=True, exist_ok=True)
-        target_path = target_dir / filename
         try:
-            _write_base64_to_path(data, target_path)
+            ref = ephemeral_images.put_image(
+                context_id=self.context_id,
+                mime=str(artifact.get("mime") or result.get("mime") or "image/jpeg"),
+                data=data,
+                name=filename,
+            )
         except Exception as exc:
-            target_path.unlink(missing_ok=True)
             raise RuntimeError("Host browser artifact could not be decoded.") from exc
         materialized = dict(result)
         materialized.pop("artifact", None)
-        local_path = str(target_path)
-        materialized["path"] = local_path
-        materialized["a0_path"] = files.normalize_a0_path(local_path)
+        materialized.pop("path", None)
+        materialized.pop("a0_path", None)
+        materialized.pop("host_path", None)
+        materialized.setdefault("context_id", self.context_id)
+        materialized["ephemeral"] = True
+        materialized["ephemeral_ref"] = ref
         materialized["vision_load"] = {
             "tool_name": "vision_load",
-            "tool_args": {"paths": [local_path]},
+            "tool_args": {"paths": [ref]},
         }
         return materialized
 
@@ -569,20 +570,3 @@ def _safe_filename(value: str) -> str:
 def _estimated_base64_decoded_size(data: str) -> int:
     compact_length = sum(1 for char in data if not char.isspace())
     return (compact_length * 3) // 4
-
-
-def _write_base64_to_path(data: str, target_path: Path) -> None:
-    pending = ""
-    with target_path.open("wb") as target:
-        for offset in range(0, len(data), BASE64_DECODE_CHARS_PER_CHUNK):
-            chunk = pending + "".join(
-                char
-                for char in data[offset : offset + BASE64_DECODE_CHARS_PER_CHUNK]
-                if not char.isspace()
-            )
-            ready_length = (len(chunk) // 4) * 4
-            if ready_length:
-                target.write(base64.b64decode(chunk[:ready_length], validate=True))
-            pending = chunk[ready_length:]
-        if pending:
-            target.write(base64.b64decode(pending, validate=True))

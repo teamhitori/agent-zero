@@ -1,6 +1,6 @@
 from helpers.print_style import PrintStyle
 from helpers.tool import Tool, Response
-from helpers import runtime, files, plugins
+from helpers import runtime, files, plugins, ephemeral_images
 from mimetypes import guess_type
 from helpers import history
 
@@ -16,18 +16,43 @@ class VisionLoad(Tool):
         self.skipped_paths: list[str] = []
 
         max_embeds = self._get_max_embeds()
-        limited_paths = paths if max_embeds <= 0 else paths[-max_embeds:]
-        self.skipped_paths = paths[:-max_embeds] if max_embeds > 0 and len(paths) > max_embeds else []
+        requested = [
+            (str(path or "").strip(), self._display_input_path(str(path or "").strip(), idx + 1))
+            for idx, path in enumerate(paths)
+        ]
+        limited_paths = requested if max_embeds <= 0 else requested[-max_embeds:]
+        self.skipped_paths = (
+            [display for _, display in requested[:-max_embeds]]
+            if max_embeds > 0 and len(requested) > max_embeds
+            else []
+        )
 
-        for path in limited_paths:
+        for path, display_path in limited_paths:
+            if not path:
+                continue
+            if ephemeral_images.is_ref(path):
+                image = ephemeral_images.consume_image(
+                    path,
+                    context_id=self._context_id(),
+                )
+                if image is None:
+                    continue
+                display = image.display_name or display_path
+                self.images_dict[display] = image.data_url
+                self.loaded_paths.append(display)
+                continue
+            if self._is_data_image_url(path):
+                self.images_dict[display_path] = path
+                self.loaded_paths.append(display_path)
+                continue
             if not await runtime.call_development_function(files.exists, str(path)):
                 continue
 
             if path not in self.images_dict:
                 mime_type, _ = guess_type(str(path))
                 if mime_type and mime_type.startswith("image/"):
-                    self.images_dict[path] = str(path)
-                    self.loaded_paths.append(path)
+                    self.images_dict[display_path] = str(path)
+                    self.loaded_paths.append(display_path)
 
         return Response(message="dummy", break_loop=False)
 
@@ -36,6 +61,23 @@ class VisionLoad(Tool):
         chat_cfg = cfg.get("chat_model", {})
         max_embeds = chat_cfg.get("max_embeds", 10)
         return int(max_embeds or 0)
+
+    def _context_id(self) -> str:
+        return str(getattr(getattr(self.agent, "context", None), "id", "") or "").strip()
+
+    @staticmethod
+    def _is_data_image_url(value: str) -> bool:
+        normalized = str(value or "").strip().lower()
+        return normalized.startswith("data:image/") and ";base64," in normalized
+
+    @classmethod
+    def _display_input_path(cls, value: str, index: int) -> str:
+        if ephemeral_images.is_ref(value):
+            return ephemeral_images.display_ref(value)
+        if cls._is_data_image_url(value):
+            prefix = value.split(",", 1)[0]
+            return f"{prefix},<ephemeral-image-{index}>"
+        return value
 
     async def after_execution(self, response: Response, **kwargs):
 

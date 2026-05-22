@@ -12,6 +12,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+from helpers import ephemeral_images
 from plugins._a0_connector.helpers import ws_runtime
 from plugins._browser.helpers.connector_runtime import (
     ConnectorBrowserRuntime,
@@ -329,19 +330,7 @@ def test_connector_runtime_adds_docker_recovery_to_host_errors():
     assert "/browser container" in message
 
 
-def test_host_browser_artifacts_materialize_inside_multi_results(monkeypatch, tmp_path):
-    import plugins._browser.helpers.connector_runtime as connector_runtime_module
-
-    monkeypatch.setattr(
-        connector_runtime_module.files,
-        "get_abs_path",
-        lambda *parts: str(tmp_path.joinpath(*parts)),
-    )
-    monkeypatch.setattr(
-        connector_runtime_module.files,
-        "normalize_a0_path",
-        lambda path: "/a0/" + str(path).lstrip("/"),
-    )
+def test_host_browser_artifacts_become_context_scoped_ephemeral_refs(tmp_path):
     runtime = ConnectorBrowserRuntime("ctx-host", _agent("ctx-host"))
 
     result = runtime._materialize_artifact(
@@ -363,19 +352,19 @@ def test_host_browser_artifacts_materialize_inside_multi_results(monkeypatch, tm
 
     inner = result[0]["result"]
     assert "artifact" not in inner
-    assert inner["path"].endswith("shot.jpg")
-    assert Path(inner["path"]).read_bytes() == b"fake"
-    assert inner["vision_load"]["tool_args"]["paths"] == [inner["path"]]
+    assert "path" not in inner
+    assert "a0_path" not in inner
+    assert inner["context_id"] == "ctx-host"
+    assert inner["ephemeral"] is True
+    assert inner["ephemeral_ref"].startswith(ephemeral_images.REF_PREFIX)
+    assert inner["vision_load"]["tool_args"]["paths"] == [inner["ephemeral_ref"]]
+    assert ephemeral_images.consume_image(inner["ephemeral_ref"], context_id="ctx-host").data_url == "data:image/jpeg;base64,ZmFrZQ=="
+    assert not list(tmp_path.rglob("shot.jpg"))
 
 
 def test_host_browser_artifact_materialization_rejects_oversized_payload(monkeypatch, tmp_path):
     import plugins._browser.helpers.connector_runtime as connector_runtime_module
 
-    monkeypatch.setattr(
-        connector_runtime_module.files,
-        "get_abs_path",
-        lambda *parts: str(tmp_path.joinpath(*parts)),
-    )
     monkeypatch.setattr(connector_runtime_module, "MAX_ARTIFACT_SIZE_BYTES", 2)
     runtime = ConnectorBrowserRuntime("ctx-host", _agent("ctx-host"))
 

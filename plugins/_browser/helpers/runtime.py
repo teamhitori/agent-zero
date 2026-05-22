@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from helpers import files
+from helpers import ephemeral_images, files
 from helpers.defer import DeferredTask
 from helpers.errors import RepairableException
 from helpers.print_style import PrintStyle
@@ -1548,6 +1548,34 @@ class _BrowserRuntimeCore:
         await self.ensure_started()
         resolved_id = self._resolve_browser_id(browser_id)
         page = self._page(resolved_id)
+        raw_path = str(path or "").strip()
+        if not raw_path:
+            image = await page.screenshot(
+                type="jpeg",
+                quality=max(20, min(95, int(quality))),
+                full_page=bool(full_page),
+            )
+            ref = ephemeral_images.put_image_bytes(
+                context_id=self.context_id,
+                mime="image/jpeg",
+                payload=image,
+                name=f"browser-{resolved_id}.jpg",
+            )
+            return {
+                "browser_id": resolved_id,
+                "context_id": self.context_id,
+                "mime": "image/jpeg",
+                "ephemeral": True,
+                "ephemeral_ref": ref,
+                "state": await self._state(resolved_id),
+                "vision_load": {
+                    "tool_name": "vision_load",
+                    "tool_args": {
+                        "paths": [ref],
+                    },
+                },
+            }
+
         output_path, image_type, mime = self._screenshot_output_path(resolved_id, path)
         output_path.parent.mkdir(parents=True, exist_ok=True)
         clamped_quality = max(20, min(95, int(quality)))
@@ -1562,6 +1590,7 @@ class _BrowserRuntimeCore:
         local_path = str(output_path)
         return {
             "browser_id": resolved_id,
+            "context_id": self.context_id,
             "path": local_path,
             "a0_path": files.normalize_a0_path(local_path),
             "mime": mime,
