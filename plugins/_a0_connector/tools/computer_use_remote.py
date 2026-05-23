@@ -480,6 +480,20 @@ class ComputerUseRemote(Tool):
         backend_id = str(data.get("backend_id", "") or "").strip().lower()
         backend_family = str(data.get("backend_family", "") or "").strip().lower()
         features = {feature.lower() for feature in self._backend_features(data)}
+        has_linux_atspi = bool(
+            features
+            & {
+                "atspi-tree-snapshot",
+                "atspi-structural-targeting",
+                "atspi-element-action",
+                "atspi-set-value",
+            }
+        )
+        if backend_id in {"wayland", "x11", "linux"} or backend_family == "linux" or has_linux_atspi:
+            return (
+                " Load skill `host-computer-use-linux` before using Linux AT-SPI "
+                "structural actions."
+            )
         has_macos_ax = bool(
             features
             & {
@@ -548,6 +562,7 @@ class ComputerUseRemote(Tool):
         return (
             f"AX snapshot for {app_name}: {node_count} node(s){truncated}. "
             f"Root {root_label}. Use path or semantic target fields with ax_action."
+            f"{self._structural_tree_outline(tree)}"
         )
 
     def _format_uia_snapshot(self, data: dict[str, Any]) -> str:
@@ -562,7 +577,71 @@ class ComputerUseRemote(Tool):
             f"Root {root_label}. Prefer node actions with uia_action; use "
             f"focus_window/minimize/restore/maximize for windows, and reserve click "
             f"for a last resort."
+            f"{self._structural_tree_outline(tree)}"
         )
+
+    def _structural_tree_outline(self, tree: dict[str, Any], *, max_lines: int = 80) -> str:
+        if not tree:
+            return ""
+        lines: list[str] = ["", "", "Nodes:"]
+        truncated = False
+
+        def visit(node: dict[str, Any], depth: int) -> None:
+            nonlocal truncated
+            if len(lines) - 3 >= max_lines:
+                truncated = True
+                return
+            lines.append(self._structural_node_line(node, depth=depth))
+            children = node.get("children")
+            if not isinstance(children, list):
+                return
+            for child in children:
+                if len(lines) - 3 >= max_lines:
+                    truncated = True
+                    break
+                if isinstance(child, dict):
+                    visit(child, depth + 1)
+
+        visit(tree, 0)
+        if truncated:
+            lines.append("... outline truncated; request a narrower max_depth/max_nodes snapshot if needed.")
+        return "\n".join(lines)
+
+    def _structural_node_line(self, node: dict[str, Any], *, depth: int) -> str:
+        indent = "  " * max(0, depth)
+        role = str(node.get("role") or "element")
+        path = node.get("path", [])
+        parts = [f"{indent}- path={path} role={role}"]
+        for key in ("title", "name", "description", "automation_id", "class_name", "selector"):
+            value = node.get(key)
+            if isinstance(value, str) and value.strip():
+                parts.append(f"{key}={value.strip()[:120]!r}")
+                break
+        frame = node.get("frame")
+        if isinstance(frame, dict):
+            x = frame.get("x", "?")
+            y = frame.get("y", "?")
+            width = frame.get("width", "?")
+            height = frame.get("height", "?")
+            parts.append(f"frame=({x},{y} {width}x{height})")
+        actions = node.get("actions")
+        if isinstance(actions, list) and actions:
+            names = [
+                str(item.get("name") or "").strip()
+                for item in actions
+                if isinstance(item, dict) and str(item.get("name") or "").strip()
+            ]
+            if names:
+                parts.append(f"actions={','.join(names[:6])}")
+        states = node.get("states")
+        if isinstance(states, list) and states:
+            values = [str(item).strip() for item in states if str(item).strip()]
+            if values:
+                parts.append(f"states={','.join(values[:8])}")
+        text = node.get("text")
+        if isinstance(text, str) and text.strip():
+            parts.append(f"text={text.strip()[:120]!r}")
+        return " ".join(parts)
 
     def _ax_target_label(self, target: dict[str, Any]) -> str:
         role = str(target.get("role") or "element")

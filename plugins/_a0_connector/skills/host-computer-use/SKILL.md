@@ -79,6 +79,7 @@ If any tool result contains `COMPUTER_USE_REARM_REQUIRED` or `status=rearm requi
 
 ## Backend Skills
 
+- If the backend is Linux/Wayland or features include `atspi-tree-snapshot` / `atspi-structural-targeting`, load `host-computer-use-linux` before using Linux AT-SPI structural actions.
 - If the backend is macOS or features include `accessibility-tree-snapshot` / `accessibility-structural-targeting`, load `host-computer-use-macos` before using macOS structural Accessibility actions.
 - If the backend is Windows or features include `uia-tree-snapshot` / `uia-structural-targeting`, load `host-computer-use-windows` before using Windows UI Automation structural actions.
 - Do not use backend-specific actions just because their argument names exist in the generic contract. Treat them as unavailable unless the connected CLI advertises the matching feature.
@@ -88,6 +89,7 @@ If any tool result contains `COMPUTER_USE_REARM_REQUIRED` or `status=rearm requi
 - Only the latest screenshot or a definitive tool result counts as evidence.
 - If a tool result says a screenshot was attached but you cannot actually see the image, stop and report that visual verification is unavailable. Do not continue with another action from an assumed host state.
 - Outside advertised structural accessibility support, use normalized global screen coordinates; do not assume window ids, element indexes, background-safe input, or semantic click targets unless the runtime explicitly advertises them.
+- On Linux, AT-SPI structural targeting uses backend-specific actions documented in `host-computer-use-linux`; do not apply macOS AX-specific assumptions unless the backend is macOS.
 - Prefer accessibility and semantic UI paths first: shortcuts, command palettes, menu accelerators, address/search bars, focus traversal, and other keyboard-accessible controls.
 - Prefer `key` and `type` over pointer actions whenever a reliable keyboard path exists.
 - When a menu or popup is open, treat it as the active UI and prefer keyboard navigation over clicking small transient rows by coordinate.
