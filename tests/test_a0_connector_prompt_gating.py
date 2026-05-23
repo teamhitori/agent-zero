@@ -95,31 +95,32 @@ def _apply_gate(context_id: str) -> str:
     return data["result"]
 
 
-def _subscribe(
-    context_id: str,
-    *,
-    remote_files: dict | None = None,
-    remote_exec: dict | None = None,
-    computer_use: dict | None = None,
-) -> str:
-    sid = _sid()
-    ws_runtime.register_sid(sid)
-    ws_runtime.subscribe_sid_to_context(sid, context_id)
-    if remote_files is not None:
-        ws_runtime.store_sid_remote_file_metadata(sid, remote_files)
-    if remote_exec is not None:
-        ws_runtime.store_sid_remote_exec_metadata(sid, remote_exec)
-    if computer_use is not None:
-        ws_runtime.store_sid_computer_use_metadata(sid, computer_use)
-    return sid
-
-
-def test_legacy_dynamic_remote_tool_gate_is_noop():
+def test_remote_tool_gate_includes_runtime_checked_computer_use_contract():
     prompt = _apply_gate(_context_id())
 
     assert "text_editor_remote tool" not in prompt
     assert "code_execution_remote tool" not in prompt
-    assert "computer_use_remote tool" not in prompt
+    assert '"tool_name": "computer_use_remote"' in prompt
+    assert "### computer_use_remote" in prompt
+    assert "checked when the tool runs" in prompt
+
+
+def test_computer_use_remote_prompt_is_cli_session_wide_not_context_scoped():
+    prompt = _apply_gate(_context_id())
+
+    assert "### computer_use_remote" in prompt
+    assert '"tool_name": "computer_use_remote"' in prompt
+    assert "scoped to the current CLI session" in prompt
+    assert "not scoped to a single chat context" in prompt
+
+
+def test_computer_use_remote_prompt_keeps_runtime_failures_actionable():
+    prompt = _apply_gate(_context_id())
+
+    assert "no CLI" in prompt
+    assert "disabled computer use" in prompt
+    assert "COMPUTER_USE_REARM_REQUIRED" in prompt
+    assert "/computer-use on" in prompt
 
 
 def test_remote_file_and_exec_tools_are_standard_tool_prompts_independent_from_context():
@@ -132,7 +133,7 @@ def test_remote_file_and_exec_tools_are_standard_tool_prompts_independent_from_c
     assert "Availability and permissions are checked when the tool runs" in exec_stub
 
 
-def test_beta_computer_use_remote_is_skill_only_not_standard_tool_prompt():
+def test_computer_use_remote_is_standard_prompt_with_runtime_checks():
     skill = (
         PROJECT_ROOT
         / "plugins"
@@ -141,8 +142,12 @@ def test_beta_computer_use_remote_is_skill_only_not_standard_tool_prompt():
         / "host-computer-use"
         / "SKILL.md"
     )
+    standard_prompt = PROMPT_ROOT / "agent.system.tool.computer_use_remote.md"
 
-    assert not (PROMPT_ROOT / "agent.system.tool.computer_use_remote.md").exists()
+    assert not (PROMPT_ROOT / "agent.system.runtime_tool.computer_use_remote.md").exists()
+    assert standard_prompt.exists()
+    assert '"tool_name": "computer_use_remote"' in standard_prompt.read_text(encoding="utf-8")
+    assert "checked when the tool runs" in standard_prompt.read_text(encoding="utf-8")
     assert '"tool_name": "computer_use_remote"' in skill.read_text(encoding="utf-8")
 
 
@@ -329,6 +334,7 @@ def test_remote_affordance_skills_parse():
 def test_remote_tool_stubs_are_self_contained_and_reference_per_tool_skills():
     text_stub = (PROMPT_ROOT / "agent.system.tool.text_editor_remote.md").read_text(encoding="utf-8")
     exec_stub = (PROMPT_ROOT / "agent.system.tool.code_execution_remote.md").read_text(encoding="utf-8")
+    computer_stub = (PROMPT_ROOT / "agent.system.tool.computer_use_remote.md").read_text(encoding="utf-8")
     computer_skill = (
         PROJECT_ROOT
         / "plugins"
@@ -342,13 +348,16 @@ def test_remote_tool_stubs_are_self_contained_and_reference_per_tool_skills():
     assert "optionally load skill `host-code-execution`" in exec_stub
     assert '"tool_name": "text_editor_remote"' in text_stub
     assert '"tool_name": "code_execution_remote"' in exec_stub
+    assert '"tool_name": "computer_use_remote"' in computer_stub
+    assert "load and follow skill `host-computer-use`" in computer_stub
     assert '"tool_name": "computer_use_remote"' in computer_skill
-    assert "Availability, backend support, and trust mode are checked when the tool runs" in computer_skill
+    assert "Availability, backend support, and trust mode are checked when the tool runs" in computer_stub
     assert "not `code_execution_tool`" in exec_stub
     assert "not to" in exec_stub
     assert "Docker/server/container execution" in exec_stub
     assert "a0-cli-remote-workflows" not in text_stub
     assert "a0-cli-remote-workflows" not in exec_stub
+    assert "a0-cli-remote-workflows" not in computer_stub
     assert "a0-cli-remote-workflows" not in computer_skill
 
 

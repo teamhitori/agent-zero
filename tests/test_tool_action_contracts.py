@@ -548,17 +548,25 @@ def test_corrected_tool_prompts_only_teach_action_contract():
             assert "Open Document, or Desktop edit actions" not in text
 
 
-def test_computer_use_remote_is_skill_gated():
+def test_computer_use_remote_is_runtime_checked_standard_tool():
     project_root = Path(__file__).resolve().parents[1]
-    prompt_path = (
+    standard_prompt_path = (
         project_root
         / "plugins/_a0_connector/prompts/agent.system.tool.computer_use_remote.md"
     )
+    standard_prompt_text = standard_prompt_path.read_text(encoding="utf-8")
     skill_text = (
         project_root
         / "plugins/_a0_connector/skills/host-computer-use/SKILL.md"
     ).read_text(encoding="utf-8")
 
-    assert not prompt_path.exists()
+    assert standard_prompt_path.exists()
+    assert not (
+        project_root
+        / "plugins/_a0_connector/prompts/agent.system.runtime_tool.computer_use_remote.md"
+    ).exists()
+    assert '"tool_name": "computer_use_remote"' in standard_prompt_text
+    assert "not scoped to a single chat context" in standard_prompt_text
+    assert "checked when the tool runs" in standard_prompt_text
     assert '"tool_name": "computer_use_remote"' in skill_text
     assert "Beta desktop control" in skill_text
