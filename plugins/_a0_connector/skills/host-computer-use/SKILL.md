@@ -13,8 +13,6 @@ triggers:
   - "host screen"
   - "local screen"
   - "Ubuntu Wayland desktop"
-  - "hide window"
-  - "minimize window"
 ---
 
 # Host Computer Use
@@ -57,9 +55,9 @@ Use:
 
 Arguments:
 
-- `action`: `start_session`, `status`, `capture`, `ax_snapshot`, `ax_action`, `move`, `click`, `scroll`, `key`, `type`, `stop_session`
+- `action`: `start_session`, `status`, `capture`, `move`, `click`, `scroll`, `key`, `type`, `stop_session`
 - `session_id`: optional after `start_session`
-- `ax_snapshot`, `ax_action`: backend-gated structural accessibility actions; use only when backend metadata advertises matching support, and load the backend-specific skill first
+- backend skills may document additional backend-only action values; use them only when backend metadata advertises matching support and after loading the backend-specific skill
 - `move`: `x`, `y` normalized to `[0,1]`
 - `click`: optional `x`, `y`, optional `button` (`left`, `right`, `middle`), optional `count`
 - `scroll`: `dx`, `dy`
@@ -75,30 +73,28 @@ If any tool result contains `COMPUTER_USE_REARM_REQUIRED` or `status=rearm requi
 1. Call `start_session` first.
 2. Read the returned `backend_id`, `backend_family`, and `features`; load a backend-specific Computer Use skill when the task needs backend-only affordances.
 3. Decide final success from the latest screenshot, not from memory.
-4. Interactive actions (`ax_action`, `move`, `click`, `scroll`, `key`, `type`) already attach a fresh screenshot after they run; inspect it before claiming the requested outcome succeeded.
+4. Interactive actions already attach a fresh screenshot after they run; inspect it before claiming the requested outcome succeeded.
 5. Use `status` for state without starting a session.
 6. Use `capture` only when you need another screenshot without taking an action.
 
 ## Backend Skills
 
-- If the backend is macOS or features include `accessibility-tree-snapshot` / `accessibility-structural-targeting`, load `host-computer-use-macos` before using `ax_snapshot` or `ax_action`.
+- If the backend is macOS or features include `accessibility-tree-snapshot` / `accessibility-structural-targeting`, load `host-computer-use-macos` before using macOS structural Accessibility actions.
 - Do not use backend-specific actions just because their argument names exist in the generic contract. Treat them as unavailable unless the connected CLI advertises the matching feature.
 
 ## Operating Rules
 
 - Only the latest screenshot or a definitive tool result counts as evidence.
 - If a tool result says a screenshot was attached but you cannot actually see the image, stop and report that visual verification is unavailable. Do not continue with another action from an assumed host state.
-- Outside advertised AX support, use normalized global screen coordinates; do not assume window ids, element indexes, background-safe input, or semantic click targets unless the runtime explicitly advertises them.
+- Outside advertised structural accessibility support, use normalized global screen coordinates; do not assume window ids, element indexes, background-safe input, or semantic click targets unless the runtime explicitly advertises them.
 - Prefer accessibility and semantic UI paths first: shortcuts, command palettes, menu accelerators, address/search bars, focus traversal, and other keyboard-accessible controls.
 - Prefer `key` and `type` over pointer actions whenever a reliable keyboard path exists.
 - When a menu or popup is open, treat it as the active UI and prefer keyboard navigation over clicking small transient rows by coordinate.
 - If a click dismisses a menu or popup without producing the expected next UI, treat that attempt as failed.
 - If the same approach has already failed twice without visible progress, switch strategy instead of repeating it.
 - Do not infer focus or task completion from chat logs, sidebars, tool summaries, or status text.
-- Never claim a window was hidden, minimized, moved, text was submitted, or navigation completed until the latest screenshot visibly confirms it.
-- On Ubuntu/GNOME/Wayland, use `Super+H` (`{"action":"key","keys":["Super","H"]}`) to hide the active window. Do not use `Alt+F9` as the primary hide/minimize shortcut on this environment; it often leaves the window visible.
-- After any hide/minimize shortcut, inspect the fresh screenshot. If the target window or focused composer is still visible, treat the attempt as failed and do not type follow-up text into the active field.
-- A `type` tool result only confirms keystrokes were sent. It is not evidence that the text landed in the intended application, nor evidence that a window was hidden first.
+- Never claim a state-changing action succeeded until the latest screenshot visibly confirms it.
+- A `type` tool result only confirms keystrokes were sent. It is not evidence that the text landed in the intended application.
 - For browser-navigation tasks done through this tool, only claim success if the browser content area visibly shows the destination page or result.
 - If the attached screenshot appears unchanged after a state-changing action, use one explicit `capture` to verify before repeating the same action.
 - Use `type(..., submit=true)` only for URL or navigation-style entry where Enter should fire immediately after typing.

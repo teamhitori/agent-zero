@@ -618,8 +618,14 @@ def test_computer_use_remote_is_runtime_checked_standard_tool():
     assert "checked when the tool runs" in standard_prompt_text
     assert "visual verification is unavailable" in standard_prompt_text
     assert "host-computer-use-macos" in standard_prompt_text
+    assert "ax_snapshot" not in standard_prompt_text
+    assert "ax_action" not in standard_prompt_text
     assert '"tool_name": "computer_use_remote"' in skill_text
+    assert "ax_snapshot" not in skill_text
+    assert "ax_action" not in skill_text
     assert '"tool_name": "computer_use_remote"' in macos_skill_text
+    assert "ax_snapshot" in macos_skill_text
+    assert "ax_action" in macos_skill_text
     assert "Backend-specific macOS guidance" in macos_skill_text
     assert "Beta desktop control" in skill_text
 

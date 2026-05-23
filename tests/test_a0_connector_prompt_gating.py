@@ -134,19 +134,22 @@ def test_computer_use_remote_prompt_requires_visual_verification_after_actions()
         / "SKILL.md"
     ).read_text(encoding="utf-8")
 
-    assert "Treat key presses, clicks, scrolling, typing" in prompt
+    assert "Treat key presses, clicks, scrolling, and typing" in prompt
     assert "attempts, not success" in prompt
     assert "visual verification is unavailable" in prompt
     assert "do not continue by assuming the host state" in prompt
-    assert "Super+H" in prompt
-    assert '["Super","H"]' in prompt
-    assert "Alt+F9" in prompt
+    assert "Super+H" not in prompt
+    assert "Alt+F9" not in prompt
+    assert "hide" not in prompt.lower()
+    assert "minimize" not in prompt.lower()
+    assert "window-manager" not in prompt
     assert "cannot actually see the image" in skill
-    assert "Do not use `Alt+F9` as the primary hide/minimize shortcut" in skill
     assert "A `type` tool result only confirms keystrokes were sent" in skill
-    assert "do not type follow-up text into the active field" in skill
     assert "visibly confirms" in skill
-    assert "Ubuntu/GNOME/Wayland" in skill
+    assert "hide window" not in skill
+    assert "minimize window" not in skill
+    assert "hide/minimize" not in skill
+    assert "window-manager" not in skill
 
 
 def test_remote_file_and_exec_tools_are_standard_tool_prompts_independent_from_context():
@@ -398,11 +401,14 @@ def test_remote_tool_stubs_are_self_contained_and_reference_per_tool_skills():
     assert '"tool_name": "computer_use_remote"' in computer_stub
     assert "load and follow skill `host-computer-use`" in computer_stub
     assert "host-computer-use-macos" in computer_stub
+    assert "ax_snapshot" not in computer_stub
+    assert "ax_action" not in computer_stub
     assert "Do not substitute the `linux-desktop` skill" in computer_stub
     assert '"tool_name": "computer_use_remote"' in computer_skill
     assert '"tool_name": "computer_use_remote"' in macos_computer_skill
     assert "ax_snapshot" in macos_computer_skill
-    assert "ax_snapshot`/`ax_action` are structural Accessibility targeting" not in computer_skill
+    assert "ax_snapshot" not in computer_skill
+    assert "ax_action" not in computer_skill
     assert "Availability, backend support, and trust mode are checked when the tool runs" in computer_stub
     assert "not `code_execution_tool`" in exec_stub
     assert "not to" in exec_stub

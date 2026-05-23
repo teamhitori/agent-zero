@@ -10,9 +10,9 @@ If the tool reports no CLI, disabled computer use, or `COMPUTER_USE_REARM_REQUIR
 
 Call `start_session` before screen-driven tasks. Use `status` for state only, `capture` for screenshots without an action, and `stop_session` when the desktop task is complete. Interactive coordinate actions should use normalized global-screen coordinates from the most recent capture.
 
-Some actions are backend-specific. Use `ax_snapshot` and `ax_action` only when `status` or `start_session` reports a macOS backend with Accessibility-tree features such as `accessibility-tree-snapshot` or `accessibility-structural-targeting`. For macOS structural targeting details, load and follow skill `host-computer-use-macos`; do not apply AX guidance to non-macOS backends.
+Some actions are backend-specific and intentionally documented only in backend skills. If `status` or `start_session` reports backend-specific features or tells you to load a backend skill, load and follow that skill before using those backend-only actions. For macOS structural targeting details, load and follow skill `host-computer-use-macos`; do not apply macOS guidance to non-macOS backends.
 
-State-changing actions automatically attach a fresh screen after they run. Treat key presses, clicks, scrolling, typing, and window-manager shortcuts as attempts, not success: inspect the latest attached screen, or one explicit `capture` if it is unclear or unchanged, before saying the requested outcome happened. If the tool says a screen was attached but you cannot actually inspect the image, stop and report that visual verification is unavailable; do not continue by assuming the host state. For Ubuntu/GNOME/Wayland hide-window tasks, prefer `Super+H` (`{"action":"key","keys":["Super","H"]}`) for the active window; do not use `Alt+F9` as the primary hide/minimize shortcut because it often leaves the window visible. A `type` result only proves keystrokes were sent; it does not prove the window was hidden or that text landed in the intended place.
+State-changing actions automatically attach a fresh screen after they run. Treat key presses, clicks, scrolling, and typing as attempts, not success: inspect the latest attached screen, or one explicit `capture` if it is unclear or unchanged, before saying the requested outcome happened. If the tool says a screen was attached but you cannot actually inspect the image, stop and report that visual verification is unavailable; do not continue by assuming the host state. A `type` result only proves keystrokes were sent; it does not prove that text landed in the intended place.
 
 ```json
 {
@@ -24,18 +24,13 @@ State-changing actions automatically attach a fresh screen after they run. Treat
 ```
 
 Required argument:
-- `action`: one of `start_session`, `status`, `capture`, `ax_snapshot`, `ax_action`, `move`, `click`, `scroll`, `key`, `type`, `stop_session`
+- `action`: one of `start_session`, `status`, `capture`, `move`, `click`, `scroll`, `key`, `type`, `stop_session`; backend skills may document additional backend-only action values
 
 Optional arguments by action:
 - `session_id`: session returned by `start_session`
 - `x`, `y`: normalized `[0,1]` global-screen coordinates for `move` and `click`
 - `button`: `left`, `right`, or `middle` for `click`
 - `count`: click count for `click`
-- `max_depth`, `max_nodes`: optional bounds for backend-gated `ax_snapshot`
-- `path`: element path from `ax_snapshot` for backend-gated `ax_action`
-- `target`: semantic element target for backend-gated `ax_action`, for example role/title/description/value/identifier
-- `operation` or `ax_action`: backend-gated AX operation such as `press`, `focus`, or `set_value`
-- `value` or `text`: value for backend-gated `ax_action` with `set_value`
 - `dx`, `dy`: scroll amounts for `scroll`
 - `key` or `keys`: key press value for `key`
 - `text`: text to type for `type`
