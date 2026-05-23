@@ -31,7 +31,7 @@ If the task needs shell execution on the CLI host, load `host-code-execution` se
 
 This skill controls the user's connected host/local computer through A0 CLI. It is not the built-in Linux Desktop/Xpra skill.
 
-Never switch to `linux-desktop`, the Agent Zero Desktop/Xpra surface, `desktopctl.sh`, `code_execution_tool`, or Docker/server shell commands as a fallback for host screen actions such as screenshots, clicking, typing, hiding/minimizing windows, or checking visible host UI. Those paths only see the internal Agent Zero runtime. If `computer_use_remote` is unavailable, disabled, or needs re-arming, stop and ask the user to run `/computer-use on` in the A0 CLI and approve the platform permission prompt.
+Never switch to `linux-desktop`, the Agent Zero Desktop/Xpra surface, `desktopctl.sh`, `code_execution_tool`, or Docker/server shell commands as a fallback for host screen actions such as screenshots, clicking, typing, desktop state changes, or checking visible host UI. Those paths only see the internal Agent Zero runtime. If `computer_use_remote` is unavailable, disabled, or needs re-arming, stop and ask the user to run `/computer-use on` in the A0 CLI and approve the platform permission prompt.
 
 ## Browser Boundary
 
@@ -80,6 +80,7 @@ If any tool result contains `COMPUTER_USE_REARM_REQUIRED` or `status=rearm requi
 ## Backend Skills
 
 - If the backend is macOS or features include `accessibility-tree-snapshot` / `accessibility-structural-targeting`, load `host-computer-use-macos` before using macOS structural Accessibility actions.
+- If the backend is Windows or features include `uia-tree-snapshot` / `uia-structural-targeting`, load `host-computer-use-windows` before using Windows UI Automation structural actions.
 - Do not use backend-specific actions just because their argument names exist in the generic contract. Treat them as unavailable unless the connected CLI advertises the matching feature.
 
 ## Operating Rules

@@ -35,6 +35,7 @@ REARM_REQUIRED_DEFAULT_MESSAGE = (
 _AUTO_CAPTURE_ACTIONS = {
     "start_session",
     "ax_action",
+    "uia_action",
     "move",
     "click",
     "scroll",
@@ -48,6 +49,7 @@ _SETTLE_DELAY_SCROLL = 0.35
 _SETTLE_DELAY_KEY = 0.2
 _SETTLE_DELAY_TYPE = 0.25
 _SETTLE_DELAY_AX_ACTION = 0.25
+_SETTLE_DELAY_UIA_ACTION = 0.25
 _SETTLE_DELAY_GLOBAL_FOCUS = 0.45
 _SETTLE_DELAY_PLAIN_ENTER = 0.3
 _SETTLE_DELAY_SUBMIT = 0.45
@@ -58,6 +60,8 @@ _SUPPORTED_ACTIONS = {
     "capture",
     "ax_snapshot",
     "ax_action",
+    "uia_snapshot",
+    "uia_action",
     "move",
     "click",
     "scroll",
@@ -77,6 +81,7 @@ class ComputerUseRemote(Tool):
                 message=(
                     "action is required and must be one of: "
                     "start_session, status, capture, ax_snapshot, ax_action, "
+                    "uia_snapshot, uia_action, "
                     "move, click, scroll, key, type, stop_session"
                 ),
                 break_loop=False,
@@ -262,6 +267,8 @@ class ComputerUseRemote(Tool):
             return _SETTLE_DELAY_SCROLL
         if action == "ax_action":
             return _SETTLE_DELAY_AX_ACTION
+        if action == "uia_action":
+            return _SETTLE_DELAY_UIA_ACTION
         if action == "type" and self._coerce_bool(self.args.get("submit")):
             return _SETTLE_DELAY_SUBMIT
         if action == "type":
@@ -335,6 +342,31 @@ class ComputerUseRemote(Tool):
                 payload["value"] = self.args.get("value")
             if "text" in self.args:
                 payload["text"] = self.args.get("text", "")
+        elif action == "uia_snapshot":
+            if "max_depth" in self.args:
+                payload["max_depth"] = self._coerce_int(self.args.get("max_depth"), name="max_depth")
+            if "max_nodes" in self.args:
+                payload["max_nodes"] = self._coerce_int(self.args.get("max_nodes"), name="max_nodes")
+        elif action == "uia_action":
+            target = self.args.get("target")
+            normalized_target: dict[str, Any] = {}
+            if isinstance(target, dict):
+                normalized_target.update(target)
+            if "selector" in self.args:
+                normalized_target["selector"] = str(self.args.get("selector") or "").strip()
+            if normalized_target:
+                payload["target"] = normalized_target
+            if "path" in self.args:
+                payload["path"] = self.args.get("path")
+            operation = self.args.get("operation", self.args.get("uia_action", self.args.get("name")))
+            if operation is not None:
+                payload["operation"] = operation
+            if "value" in self.args:
+                payload["value"] = self.args.get("value")
+            if "text" in self.args:
+                payload["text"] = self.args.get("text", "")
+            if self._coerce_bool(self.args.get("submit")):
+                payload["submit"] = True
 
         return payload
 
@@ -361,6 +393,13 @@ class ComputerUseRemote(Tool):
             operation = str(data.get("operation") or "?")
             path = target.get("path", "?")
             return f"Performed AX {operation} on {self._ax_target_label(target)} path={path}."
+        if action == "uia_snapshot":
+            return self._format_uia_snapshot(data)
+        if action == "uia_action":
+            target = data.get("target") if isinstance(data.get("target"), dict) else {}
+            operation = str(data.get("operation") or "?")
+            path = target.get("path", "?")
+            return f"Performed Windows UIA {operation} on {self._uia_target_label(target)} path={path}."
         if action == "status":
             return self._format_status(data)
         if action == "start_session":
@@ -453,6 +492,20 @@ class ComputerUseRemote(Tool):
                 " Load skill `host-computer-use-macos` before using macOS AX "
                 "structural actions."
             )
+        has_windows_uia = bool(
+            features
+            & {
+                "uia-tree-snapshot",
+                "uia-structural-targeting",
+                "uia-element-action",
+                "uia-window-management",
+            }
+        )
+        if backend_id == "windows" or backend_family == "windows" or has_windows_uia:
+            return (
+                " Load skill `host-computer-use-windows` before using Windows UIA "
+                "structural actions and window-management operations."
+            )
         return ""
 
     def _format_status(self, data: dict[str, Any]) -> str:
@@ -497,9 +550,36 @@ class ComputerUseRemote(Tool):
             f"Root {root_label}. Use path or semantic target fields with ax_action."
         )
 
+    def _format_uia_snapshot(self, data: dict[str, Any]) -> str:
+        app = data.get("app") if isinstance(data.get("app"), dict) else {}
+        tree = data.get("tree") if isinstance(data.get("tree"), dict) else {}
+        app_name = str(app.get("name") or "Windows desktop")
+        node_count = data.get("node_count", "?")
+        truncated = " truncated" if data.get("truncated") else ""
+        root_label = self._uia_target_label(tree)
+        return (
+            f"Windows UIA snapshot for {app_name}: {node_count} node(s){truncated}. "
+            f"Root {root_label}. Prefer node actions with uia_action; use "
+            f"focus_window/minimize/restore/maximize for windows, and reserve click "
+            f"for a last resort."
+        )
+
     def _ax_target_label(self, target: dict[str, Any]) -> str:
         role = str(target.get("role") or "element")
         title = str(target.get("title") or target.get("description") or target.get("identifier") or "").strip()
+        if title:
+            return f"{role} {title!r}"
+        return role
+
+    def _uia_target_label(self, target: dict[str, Any]) -> str:
+        role = str(target.get("role") or "element")
+        title = str(
+            target.get("title")
+            or target.get("name")
+            or target.get("automation_id")
+            or target.get("class_name")
+            or ""
+        ).strip()
         if title:
             return f"{role} {title!r}"
         return role

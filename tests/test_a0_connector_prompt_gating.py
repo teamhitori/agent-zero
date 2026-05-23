@@ -356,6 +356,14 @@ def test_remote_affordance_skills_parse():
         / "host-computer-use-macos"
         / "SKILL.md"
     )
+    windows_computer_skill = _parse_skill_frontmatter(
+        PROJECT_ROOT
+        / "plugins"
+        / "_a0_connector"
+        / "skills"
+        / "host-computer-use-windows"
+        / "SKILL.md"
+    )
 
     assert not legacy_connector_skill.exists()
     assert text_editor_skill["name"] == "host-file-editing"
@@ -371,6 +379,8 @@ def test_remote_affordance_skills_parse():
     assert "Ubuntu Wayland desktop" in computer_skill["triggers"]
     assert macos_computer_skill["name"] == "host-computer-use-macos"
     assert "macOS guidance" in macos_computer_skill["description"]
+    assert windows_computer_skill["name"] == "host-computer-use-windows"
+    assert "Windows guidance" in windows_computer_skill["description"]
 
 
 def test_remote_tool_stubs_are_self_contained_and_reference_per_tool_skills():
@@ -393,6 +403,14 @@ def test_remote_tool_stubs_are_self_contained_and_reference_per_tool_skills():
         / "host-computer-use-macos"
         / "SKILL.md"
     ).read_text(encoding="utf-8")
+    windows_computer_skill = (
+        PROJECT_ROOT
+        / "plugins"
+        / "_a0_connector"
+        / "skills"
+        / "host-computer-use-windows"
+        / "SKILL.md"
+    ).read_text(encoding="utf-8")
 
     assert "optionally load skill `host-file-editing`" in text_stub
     assert "optionally load skill `host-code-execution`" in exec_stub
@@ -401,14 +419,25 @@ def test_remote_tool_stubs_are_self_contained_and_reference_per_tool_skills():
     assert '"tool_name": "computer_use_remote"' in computer_stub
     assert "load and follow skill `host-computer-use`" in computer_stub
     assert "host-computer-use-macos" in computer_stub
+    assert "host-computer-use-windows" in computer_stub
     assert "ax_snapshot" not in computer_stub
     assert "ax_action" not in computer_stub
+    assert "uia_snapshot" not in computer_stub
+    assert "uia_action" not in computer_stub
     assert "Do not substitute the `linux-desktop` skill" in computer_stub
     assert '"tool_name": "computer_use_remote"' in computer_skill
     assert '"tool_name": "computer_use_remote"' in macos_computer_skill
+    assert '"tool_name": "computer_use_remote"' in windows_computer_skill
     assert "ax_snapshot" in macos_computer_skill
     assert "ax_snapshot" not in computer_skill
     assert "ax_action" not in computer_skill
+    assert "uia_snapshot" in windows_computer_skill
+    assert "uia_action" in windows_computer_skill
+    assert "focus_window" in windows_computer_skill
+    assert "minimize" in windows_computer_skill
+    assert "If a node offers `invoke`, use `invoke`, not `click`" in windows_computer_skill
+    assert "uia_snapshot" not in computer_skill
+    assert "uia_action" not in computer_skill
     assert "Availability, backend support, and trust mode are checked when the tool runs" in computer_stub
     assert "not `code_execution_tool`" in exec_stub
     assert "not to" in exec_stub

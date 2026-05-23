@@ -607,6 +607,10 @@ def test_computer_use_remote_is_runtime_checked_standard_tool():
         project_root
         / "plugins/_a0_connector/skills/host-computer-use-macos/SKILL.md"
     ).read_text(encoding="utf-8")
+    windows_skill_text = (
+        project_root
+        / "plugins/_a0_connector/skills/host-computer-use-windows/SKILL.md"
+    ).read_text(encoding="utf-8")
 
     assert standard_prompt_path.exists()
     assert not (
@@ -618,15 +622,26 @@ def test_computer_use_remote_is_runtime_checked_standard_tool():
     assert "checked when the tool runs" in standard_prompt_text
     assert "visual verification is unavailable" in standard_prompt_text
     assert "host-computer-use-macos" in standard_prompt_text
+    assert "host-computer-use-windows" in standard_prompt_text
     assert "ax_snapshot" not in standard_prompt_text
     assert "ax_action" not in standard_prompt_text
+    assert "uia_snapshot" not in standard_prompt_text
+    assert "uia_action" not in standard_prompt_text
     assert '"tool_name": "computer_use_remote"' in skill_text
     assert "ax_snapshot" not in skill_text
     assert "ax_action" not in skill_text
+    assert "uia_snapshot" not in skill_text
+    assert "uia_action" not in skill_text
     assert '"tool_name": "computer_use_remote"' in macos_skill_text
     assert "ax_snapshot" in macos_skill_text
     assert "ax_action" in macos_skill_text
+    assert '"tool_name": "computer_use_remote"' in windows_skill_text
+    assert "uia_snapshot" in windows_skill_text
+    assert "uia_action" in windows_skill_text
+    assert "focus_window" in windows_skill_text
+    assert "If a node offers `invoke`, use `invoke`, not `click`" in windows_skill_text
     assert "Backend-specific macOS guidance" in macos_skill_text
+    assert "Backend-specific Windows guidance" in windows_skill_text
     assert "Beta desktop control" in skill_text
 
 
@@ -656,3 +671,31 @@ def test_computer_use_remote_start_session_reports_backend_features_and_macos_sk
     assert "backend=macos/macos" in message
     assert "features=accessibility-tree-snapshot, accessibility-structural-targeting" in message
     assert "host-computer-use-macos" in message
+
+
+def test_computer_use_remote_start_session_reports_backend_features_and_windows_skill(monkeypatch):
+    module = _load_computer_use_remote_tool(monkeypatch)
+    tool = object.__new__(module.ComputerUseRemote)
+
+    message = tool._extract_result(
+        "start_session",
+        {
+            "ok": True,
+            "result": {
+                "session_id": "s1",
+                "width": 3840,
+                "height": 2160,
+                "backend_id": "windows",
+                "backend_family": "windows",
+                "features": [
+                    "uia-tree-snapshot",
+                    "uia-structural-targeting",
+                ],
+            },
+        },
+    )
+
+    assert "session_id=s1" in message
+    assert "backend=windows/windows" in message
+    assert "features=uia-tree-snapshot, uia-structural-targeting" in message
+    assert "host-computer-use-windows" in message
