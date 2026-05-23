@@ -57,8 +57,9 @@ Use:
 
 Arguments:
 
-- `action`: `start_session`, `status`, `capture`, `move`, `click`, `scroll`, `key`, `type`, `stop_session`
+- `action`: `start_session`, `status`, `capture`, `ax_snapshot`, `ax_action`, `move`, `click`, `scroll`, `key`, `type`, `stop_session`
 - `session_id`: optional after `start_session`
+- `ax_snapshot`, `ax_action`: backend-gated structural accessibility actions; use only when backend metadata advertises matching support, and load the backend-specific skill first
 - `move`: `x`, `y` normalized to `[0,1]`
 - `click`: optional `x`, `y`, optional `button` (`left`, `right`, `middle`), optional `count`
 - `scroll`: `dx`, `dy`
@@ -72,16 +73,22 @@ If any tool result contains `COMPUTER_USE_REARM_REQUIRED` or `status=rearm requi
 ## Core Loop
 
 1. Call `start_session` first.
-2. Decide from the latest screenshot, not from memory.
-3. Interactive actions (`move`, `click`, `scroll`, `key`, `type`) already attach a fresh screenshot after they run; inspect it before claiming the requested outcome succeeded.
-4. Use `status` for state without starting a session.
-5. Use `capture` only when you need another screenshot without taking an action.
+2. Read the returned `backend_id`, `backend_family`, and `features`; load a backend-specific Computer Use skill when the task needs backend-only affordances.
+3. Decide final success from the latest screenshot, not from memory.
+4. Interactive actions (`ax_action`, `move`, `click`, `scroll`, `key`, `type`) already attach a fresh screenshot after they run; inspect it before claiming the requested outcome succeeded.
+5. Use `status` for state without starting a session.
+6. Use `capture` only when you need another screenshot without taking an action.
+
+## Backend Skills
+
+- If the backend is macOS or features include `accessibility-tree-snapshot` / `accessibility-structural-targeting`, load `host-computer-use-macos` before using `ax_snapshot` or `ax_action`.
+- Do not use backend-specific actions just because their argument names exist in the generic contract. Treat them as unavailable unless the connected CLI advertises the matching feature.
 
 ## Operating Rules
 
 - Only the latest screenshot or a definitive tool result counts as evidence.
 - If a tool result says a screenshot was attached but you cannot actually see the image, stop and report that visual verification is unavailable. Do not continue with another action from an assumed host state.
-- The current API uses normalized global screen coordinates; do not assume window ids, element indexes, background-safe input, or semantic click targets unless the runtime explicitly advertises them.
+- Outside advertised AX support, use normalized global screen coordinates; do not assume window ids, element indexes, background-safe input, or semantic click targets unless the runtime explicitly advertises them.
 - Prefer accessibility and semantic UI paths first: shortcuts, command palettes, menu accelerators, address/search bars, focus traversal, and other keyboard-accessible controls.
 - Prefer `key` and `type` over pointer actions whenever a reliable keyboard path exists.
 - When a menu or popup is open, treat it as the active UI and prefer keyboard navigation over clicking small transient rows by coordinate.
@@ -101,7 +108,7 @@ If any tool result contains `COMPUTER_USE_REARM_REQUIRED` or `status=rearm requi
 
 - Try keyboard scrolling first: `page_down`, `page_up`, `space`, `shift+space`, arrows, `home`, or `end`.
 - Use `scroll` when the desired pane is already active or keyboard scrolling cannot target it.
-- Treat `move` and `click` as last-resort actions for controls that cannot be reached through keyboard, accessibility, browser, or app-native tooling.
+- Treat `move` and `click` as last-resort actions for controls that cannot be reached through backend-specific structural targeting, keyboard, browser, or app-native tooling.
 - Before clicking, make sure the latest screenshot makes the target unambiguous. Use one deliberate click, then reassess from the fresh screenshot.
 
 ## Control Signals

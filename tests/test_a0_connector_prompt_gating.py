@@ -345,6 +345,14 @@ def test_remote_affordance_skills_parse():
         / "host-computer-use"
         / "SKILL.md"
     )
+    macos_computer_skill = _parse_skill_frontmatter(
+        PROJECT_ROOT
+        / "plugins"
+        / "_a0_connector"
+        / "skills"
+        / "host-computer-use-macos"
+        / "SKILL.md"
+    )
 
     assert not legacy_connector_skill.exists()
     assert text_editor_skill["name"] == "host-file-editing"
@@ -358,6 +366,8 @@ def test_remote_affordance_skills_parse():
     assert "Use instead of linux-desktop" in computer_skill["description"]
     assert "host computer" in computer_skill["triggers"]
     assert "Ubuntu Wayland desktop" in computer_skill["triggers"]
+    assert macos_computer_skill["name"] == "host-computer-use-macos"
+    assert "macOS guidance" in macos_computer_skill["description"]
 
 
 def test_remote_tool_stubs_are_self_contained_and_reference_per_tool_skills():
@@ -372,6 +382,14 @@ def test_remote_tool_stubs_are_self_contained_and_reference_per_tool_skills():
         / "host-computer-use"
         / "SKILL.md"
     ).read_text(encoding="utf-8")
+    macos_computer_skill = (
+        PROJECT_ROOT
+        / "plugins"
+        / "_a0_connector"
+        / "skills"
+        / "host-computer-use-macos"
+        / "SKILL.md"
+    ).read_text(encoding="utf-8")
 
     assert "optionally load skill `host-file-editing`" in text_stub
     assert "optionally load skill `host-code-execution`" in exec_stub
@@ -379,8 +397,12 @@ def test_remote_tool_stubs_are_self_contained_and_reference_per_tool_skills():
     assert '"tool_name": "code_execution_remote"' in exec_stub
     assert '"tool_name": "computer_use_remote"' in computer_stub
     assert "load and follow skill `host-computer-use`" in computer_stub
+    assert "host-computer-use-macos" in computer_stub
     assert "Do not substitute the `linux-desktop` skill" in computer_stub
     assert '"tool_name": "computer_use_remote"' in computer_skill
+    assert '"tool_name": "computer_use_remote"' in macos_computer_skill
+    assert "ax_snapshot" in macos_computer_skill
+    assert "ax_snapshot`/`ax_action` are structural Accessibility targeting" not in computer_skill
     assert "Availability, backend support, and trust mode are checked when the tool runs" in computer_stub
     assert "not `code_execution_tool`" in exec_stub
     assert "not to" in exec_stub

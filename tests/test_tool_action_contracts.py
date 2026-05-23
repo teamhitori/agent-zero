@@ -86,6 +86,50 @@ def _load_skills_tool(monkeypatch, skill_root: Path):
     return importlib.import_module("tools.skills_tool")
 
 
+def _load_computer_use_remote_tool(monkeypatch):
+    _install_tool_stub(monkeypatch)
+
+    history_stub = types.ModuleType("helpers.history")
+
+    class _RawMessage(dict):
+        def __init__(self, raw_content, preview):
+            super().__init__(raw_content=raw_content, preview=preview)
+
+    history_stub.RawMessage = _RawMessage
+    monkeypatch.setitem(sys.modules, "helpers.history", history_stub)
+
+    print_style_stub = types.ModuleType("helpers.print_style")
+    print_style_stub.PrintStyle = lambda *args, **kwargs: types.SimpleNamespace(
+        print=lambda *a, **k: None
+    )
+    monkeypatch.setitem(sys.modules, "helpers.print_style", print_style_stub)
+
+    ws_stub = types.ModuleType("helpers.ws")
+    ws_stub.NAMESPACE = "/test"
+    monkeypatch.setitem(sys.modules, "helpers.ws", ws_stub)
+
+    ws_manager_stub = types.ModuleType("helpers.ws_manager")
+    ws_manager_stub.ConnectionNotFoundError = RuntimeError
+    ws_manager_stub.get_shared_ws_manager = lambda: types.SimpleNamespace(
+        emit_to=lambda *a, **k: None
+    )
+    monkeypatch.setitem(sys.modules, "helpers.ws_manager", ws_manager_stub)
+
+    ws_runtime_stub = types.ModuleType("plugins._a0_connector.helpers.ws_runtime")
+    ws_runtime_stub.clear_pending_computer_use_op = lambda *args, **kwargs: None
+    ws_runtime_stub.computer_use_metadata_for_sid = lambda *args, **kwargs: {}
+    ws_runtime_stub.select_computer_use_target_sid = lambda *args, **kwargs: "sid"
+    ws_runtime_stub.store_pending_computer_use_op = lambda *args, **kwargs: None
+    monkeypatch.setitem(
+        sys.modules,
+        "plugins._a0_connector.helpers.ws_runtime",
+        ws_runtime_stub,
+    )
+
+    sys.modules.pop("plugins._a0_connector.tools.computer_use_remote", None)
+    return importlib.import_module("plugins._a0_connector.tools.computer_use_remote")
+
+
 def test_skills_tool_accepts_action_alias_for_search(monkeypatch, tmp_path: Path):
     module = _load_skills_tool(monkeypatch, tmp_path)
     tool = module.SkillsTool(
@@ -559,6 +603,10 @@ def test_computer_use_remote_is_runtime_checked_standard_tool():
         project_root
         / "plugins/_a0_connector/skills/host-computer-use/SKILL.md"
     ).read_text(encoding="utf-8")
+    macos_skill_text = (
+        project_root
+        / "plugins/_a0_connector/skills/host-computer-use-macos/SKILL.md"
+    ).read_text(encoding="utf-8")
 
     assert standard_prompt_path.exists()
     assert not (
@@ -569,5 +617,36 @@ def test_computer_use_remote_is_runtime_checked_standard_tool():
     assert "not scoped to a single chat context" in standard_prompt_text
     assert "checked when the tool runs" in standard_prompt_text
     assert "visual verification is unavailable" in standard_prompt_text
+    assert "host-computer-use-macos" in standard_prompt_text
     assert '"tool_name": "computer_use_remote"' in skill_text
+    assert '"tool_name": "computer_use_remote"' in macos_skill_text
+    assert "Backend-specific macOS guidance" in macos_skill_text
     assert "Beta desktop control" in skill_text
+
+
+def test_computer_use_remote_start_session_reports_backend_features_and_macos_skill(monkeypatch):
+    module = _load_computer_use_remote_tool(monkeypatch)
+    tool = object.__new__(module.ComputerUseRemote)
+
+    message = tool._extract_result(
+        "start_session",
+        {
+            "ok": True,
+            "result": {
+                "session_id": "s1",
+                "width": 1920,
+                "height": 1080,
+                "backend_id": "macos",
+                "backend_family": "macos",
+                "features": [
+                    "accessibility-tree-snapshot",
+                    "accessibility-structural-targeting",
+                ],
+            },
+        },
+    )
+
+    assert "session_id=s1" in message
+    assert "backend=macos/macos" in message
+    assert "features=accessibility-tree-snapshot, accessibility-structural-targeting" in message
+    assert "host-computer-use-macos" in message

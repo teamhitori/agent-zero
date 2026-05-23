@@ -34,6 +34,7 @@ REARM_REQUIRED_DEFAULT_MESSAGE = (
 )
 _AUTO_CAPTURE_ACTIONS = {
     "start_session",
+    "ax_action",
     "move",
     "click",
     "scroll",
@@ -46,6 +47,7 @@ _SETTLE_DELAY_CLICK = 0.35
 _SETTLE_DELAY_SCROLL = 0.35
 _SETTLE_DELAY_KEY = 0.2
 _SETTLE_DELAY_TYPE = 0.25
+_SETTLE_DELAY_AX_ACTION = 0.25
 _SETTLE_DELAY_GLOBAL_FOCUS = 0.45
 _SETTLE_DELAY_PLAIN_ENTER = 0.3
 _SETTLE_DELAY_SUBMIT = 0.45
@@ -54,6 +56,8 @@ _SUPPORTED_ACTIONS = {
     "start_session",
     "status",
     "capture",
+    "ax_snapshot",
+    "ax_action",
     "move",
     "click",
     "scroll",
@@ -72,7 +76,8 @@ class ComputerUseRemote(Tool):
             return Response(
                 message=(
                     "action is required and must be one of: "
-                    "start_session, status, capture, move, click, scroll, key, type, stop_session"
+                    "start_session, status, capture, ax_snapshot, ax_action, "
+                    "move, click, scroll, key, type, stop_session"
                 ),
                 break_loop=False,
             )
@@ -255,6 +260,8 @@ class ComputerUseRemote(Tool):
             return _SETTLE_DELAY_CLICK
         if action == "scroll":
             return _SETTLE_DELAY_SCROLL
+        if action == "ax_action":
+            return _SETTLE_DELAY_AX_ACTION
         if action == "type" and self._coerce_bool(self.args.get("submit")):
             return _SETTLE_DELAY_SUBMIT
         if action == "type":
@@ -310,6 +317,24 @@ class ComputerUseRemote(Tool):
             payload["text"] = self.args.get("text", "")
             if self._coerce_bool(self.args.get("submit")):
                 payload["submit"] = True
+        elif action == "ax_snapshot":
+            if "max_depth" in self.args:
+                payload["max_depth"] = self._coerce_int(self.args.get("max_depth"), name="max_depth")
+            if "max_nodes" in self.args:
+                payload["max_nodes"] = self._coerce_int(self.args.get("max_nodes"), name="max_nodes")
+        elif action == "ax_action":
+            target = self.args.get("target")
+            if isinstance(target, dict):
+                payload["target"] = dict(target)
+            if "path" in self.args:
+                payload["path"] = self.args.get("path")
+            operation = self.args.get("operation", self.args.get("ax_action", self.args.get("name")))
+            if operation is not None:
+                payload["operation"] = operation
+            if "value" in self.args:
+                payload["value"] = self.args.get("value")
+            if "text" in self.args:
+                payload["text"] = self.args.get("text", "")
 
         return payload
 
@@ -329,13 +354,27 @@ class ComputerUseRemote(Tool):
         if action == "capture":
             summary = self._record_capture(data)
             return f"Current screen attached: {summary} {CAPTURE_VERIFICATION_NOTE}"
+        if action == "ax_snapshot":
+            return self._format_ax_snapshot(data)
+        if action == "ax_action":
+            target = data.get("target") if isinstance(data.get("target"), dict) else {}
+            operation = str(data.get("operation") or "?")
+            path = target.get("path", "?")
+            return f"Performed AX {operation} on {self._ax_target_label(target)} path={path}."
         if action == "status":
             return self._format_status(data)
         if action == "start_session":
-            return (
+            message = (
                 f"Computer-use session started: session_id={data.get('session_id', '?')} "
                 f"size={data.get('width', '?')}x{data.get('height', '?')}"
             )
+            backend_details = self._format_backend_details(data)
+            if backend_details:
+                message = f"{message}, {backend_details}"
+            skill_hint = self._backend_skill_hint(data)
+            if skill_hint:
+                return f"{message}.{skill_hint}"
+            return message
         if action == "stop_session":
             return "Computer-use session stopped."
         if action == "move":
@@ -373,14 +412,54 @@ class ComputerUseRemote(Tool):
             return f"{code}: {error}"
         return error
 
+    def _format_backend_details(self, data: dict[str, Any]) -> str:
+        backend_id = str(data.get("backend_id", "") or "").strip()
+        backend_family = str(data.get("backend_family", "") or "").strip()
+        features = self._backend_features(data)
+        parts: list[str] = []
+        if backend_id:
+            backend_text = backend_id
+            if backend_family:
+                backend_text = f"{backend_text}/{backend_family}"
+            parts.append(f"backend={backend_text}")
+        if features:
+            parts.append(f"features={', '.join(features)}")
+        return ", ".join(parts)
+
+    def _backend_features(self, data: dict[str, Any]) -> list[str]:
+        raw_features = data.get("features") or []
+        if not isinstance(raw_features, (list, tuple, set)):
+            return []
+        features: list[str] = []
+        for feature in raw_features:
+            text = str(feature or "").strip()
+            if text:
+                features.append(text)
+        return features
+
+    def _backend_skill_hint(self, data: dict[str, Any]) -> str:
+        backend_id = str(data.get("backend_id", "") or "").strip().lower()
+        backend_family = str(data.get("backend_family", "") or "").strip().lower()
+        features = {feature.lower() for feature in self._backend_features(data)}
+        has_macos_ax = bool(
+            features
+            & {
+                "accessibility-tree-snapshot",
+                "accessibility-structural-targeting",
+            }
+        )
+        if backend_id == "macos" or backend_family == "macos" or has_macos_ax:
+            return (
+                " Load skill `host-computer-use-macos` before using macOS AX "
+                "structural actions."
+            )
+        return ""
+
     def _format_status(self, data: dict[str, Any]) -> str:
         status = str(data.get("status", "unknown") or "unknown")
         trust_mode = str(data.get("trust_mode", "") or "")
-        backend_id = str(data.get("backend_id", "") or "").strip()
-        backend_family = str(data.get("backend_family", "") or "").strip()
         active_contexts = data.get("active_contexts") or []
         active_text = ", ".join(str(item) for item in active_contexts) if active_contexts else "none"
-        backend_text = ""
         rearm_guidance = ""
         if status == "rearm required":
             detail = str(data.get("last_error") or "").strip()
@@ -394,19 +473,36 @@ class ComputerUseRemote(Tool):
                     "is not armed. "
                     "Stop using computer_use_remote until the user re-arms it."
                 )
-        if backend_id:
-            backend_text = backend_id
-            if backend_family:
-                backend_text = f"{backend_text}/{backend_family}"
-        if backend_text:
+        backend_details = self._format_backend_details(data)
+        if backend_details:
             return (
                 f"Computer use status={status}, trust_mode={trust_mode or 'unknown'}, "
-                f"backend={backend_text}, active_contexts={active_text}.{rearm_guidance}"
+                f"{backend_details}, active_contexts={active_text}."
+                f"{self._backend_skill_hint(data)}{rearm_guidance}"
             )
         return (
             f"Computer use status={status}, trust_mode={trust_mode or 'unknown'}, "
             f"active_contexts={active_text}.{rearm_guidance}"
         )
+
+    def _format_ax_snapshot(self, data: dict[str, Any]) -> str:
+        app = data.get("app") if isinstance(data.get("app"), dict) else {}
+        tree = data.get("tree") if isinstance(data.get("tree"), dict) else {}
+        app_name = str(app.get("name") or app.get("bundle_id") or "frontmost app")
+        node_count = data.get("node_count", "?")
+        truncated = " truncated" if data.get("truncated") else ""
+        root_label = self._ax_target_label(tree)
+        return (
+            f"AX snapshot for {app_name}: {node_count} node(s){truncated}. "
+            f"Root {root_label}. Use path or semantic target fields with ax_action."
+        )
+
+    def _ax_target_label(self, target: dict[str, Any]) -> str:
+        role = str(target.get("role") or "element")
+        title = str(target.get("title") or target.get("description") or target.get("identifier") or "").strip()
+        if title:
+            return f"{role} {title!r}"
+        return role
 
     def _record_capture(self, data: dict[str, Any]) -> str:
         display_ref, resolved_capture_id = self._resolve_capture_ref(data)
