@@ -74,6 +74,54 @@ def test_chat_messages_to_response_body_extracts_instructions():
     assert body["reasoning"] == {"effort": "high"}
 
 
+def test_chat_messages_to_response_body_preserves_image_parts_for_responses():
+    data_url = "data:image/png;base64,abcd"
+
+    body = codex.chat_messages_to_response_body(
+        {
+            "model": "gpt-5.5",
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": "Inspect this screenshot."},
+                        {"type": "image_url", "image_url": {"url": data_url}},
+                    ],
+                }
+            ],
+        }
+    )
+
+    assert body["input"] == [
+        {
+            "role": "user",
+            "content": [
+                {"type": "input_text", "text": "Inspect this screenshot."},
+                {"type": "input_image", "image_url": data_url, "detail": "auto"},
+            ],
+        }
+    ]
+
+
+def test_chat_messages_to_response_body_keeps_text_only_lists_as_text():
+    body = codex.chat_messages_to_response_body(
+        {
+            "model": "gpt-5.5",
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": "first"},
+                        {"type": "text", "text": "second"},
+                    ],
+                }
+            ],
+        }
+    )
+
+    assert body["input"] == [{"role": "user", "content": "first\nsecond"}]
+
+
 def test_response_text_reads_output_text_or_output_blocks():
     assert codex.response_text({"output_text": "direct"}) == "direct"
 

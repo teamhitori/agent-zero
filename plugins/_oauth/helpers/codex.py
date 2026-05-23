@@ -718,12 +718,14 @@ def chat_messages_to_response_body(body: dict[str, Any]) -> dict[str, Any]:
             continue
         role = str(message.get("role") or "user")
         content = message.get("content", "")
-        text = normalize_message_content(content)
         if role in {"system", "developer"}:
+            text = normalize_message_content(content)
             if text:
                 instructions.append(text)
             continue
-        response_input.append({"role": role, "content": text})
+        response_input.append(
+            {"role": role, "content": response_message_content(content)}
+        )
 
     response_body: dict[str, Any] = {
         "model": body.get("model") or "gpt-5.2",
@@ -756,6 +758,81 @@ def normalize_message_content(content: Any) -> str:
     if content is None:
         return ""
     return str(content)
+
+
+def response_message_content(content: Any) -> str | list[dict[str, Any]]:
+    if not isinstance(content, list):
+        return normalize_message_content(content)
+
+    converted: list[dict[str, Any]] = []
+    has_media = False
+    for item in content:
+        if isinstance(item, str):
+            if item:
+                converted.append({"type": "input_text", "text": item})
+            continue
+        if not isinstance(item, dict):
+            continue
+
+        item_type = str(item.get("type") or "").strip()
+        if item_type == "text":
+            text = item.get("text")
+            if isinstance(text, str) and text:
+                converted.append({"type": "input_text", "text": text})
+            continue
+        if item_type == "input_text":
+            text = item.get("text")
+            if isinstance(text, str) and text:
+                converted.append({"type": "input_text", "text": text})
+            continue
+        if item_type == "image_url":
+            image_url = item.get("image_url")
+            url = ""
+            detail = item.get("detail")
+            if isinstance(image_url, dict):
+                url = str(image_url.get("url") or "").strip()
+                detail = image_url.get("detail", detail)
+            elif isinstance(image_url, str):
+                url = image_url.strip()
+            if url:
+                converted.append(
+                    {
+                        "type": "input_image",
+                        "image_url": url,
+                        "detail": str(detail or "auto"),
+                    }
+                )
+                has_media = True
+            continue
+        if item_type == "input_image":
+            image_url = item.get("image_url")
+            file_id = item.get("file_id")
+            image: dict[str, Any] = {"type": "input_image"}
+            if isinstance(image_url, str) and image_url.strip():
+                image["image_url"] = image_url.strip()
+            if isinstance(file_id, str) and file_id.strip():
+                image["file_id"] = file_id.strip()
+            if "image_url" in image or "file_id" in image:
+                image["detail"] = str(item.get("detail") or "auto")
+                converted.append(image)
+                has_media = True
+            continue
+
+        text = item.get("text")
+        if isinstance(text, str) and text:
+            converted.append({"type": "input_text", "text": text})
+            continue
+        nested_content = item.get("content")
+        if isinstance(nested_content, str) and nested_content:
+            converted.append({"type": "input_text", "text": nested_content})
+
+    if has_media:
+        return converted
+    return "\n".join(
+        part["text"]
+        for part in converted
+        if part.get("type") == "input_text" and isinstance(part.get("text"), str)
+    )
 
 
 def response_text(response: dict[str, Any]) -> str:
