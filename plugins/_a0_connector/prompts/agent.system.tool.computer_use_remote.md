@@ -8,6 +8,8 @@ If the tool reports no CLI, disabled computer use, or `COMPUTER_USE_REARM_REQUIR
 
 Call `start_session` before screen-driven tasks. Use `status` for state only, `capture` for screenshots without an action, and `stop_session` when the desktop task is complete. Interactive actions should use normalized global-screen coordinates from the most recent capture.
 
+State-changing actions automatically attach a fresh screen after they run. Treat key presses, clicks, scrolling, typing, and window-manager shortcuts as attempts, not success: inspect the latest attached screen, or one explicit `capture` if it is unclear or unchanged, before saying the requested outcome happened. This is mandatory for Ubuntu/Wayland shortcuts such as `Alt+F9`.
+
 ```json
 {
   "tool_name": "computer_use_remote",

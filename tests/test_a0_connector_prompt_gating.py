@@ -123,6 +123,24 @@ def test_computer_use_remote_prompt_keeps_runtime_failures_actionable():
     assert "/computer-use on" in prompt
 
 
+def test_computer_use_remote_prompt_requires_visual_verification_after_actions():
+    prompt = _apply_gate(_context_id())
+    skill = (
+        PROJECT_ROOT
+        / "plugins"
+        / "_a0_connector"
+        / "skills"
+        / "host-computer-use"
+        / "SKILL.md"
+    ).read_text(encoding="utf-8")
+
+    assert "Treat key presses, clicks, scrolling, typing" in prompt
+    assert "attempts, not success" in prompt
+    assert "Alt+F9" in prompt
+    assert "visibly confirms" in skill
+    assert "Ubuntu/Wayland" in skill
+
+
 def test_remote_file_and_exec_tools_are_standard_tool_prompts_independent_from_context():
     text_stub = (PROMPT_ROOT / "agent.system.tool.text_editor_remote.md").read_text(encoding="utf-8")
     exec_stub = (PROMPT_ROOT / "agent.system.tool.code_execution_remote.md").read_text(encoding="utf-8")

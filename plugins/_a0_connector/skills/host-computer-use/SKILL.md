@@ -53,7 +53,7 @@ If any tool result contains `COMPUTER_USE_REARM_REQUIRED` or `status=rearm requi
 
 1. Call `start_session` first.
 2. Decide from the latest screenshot, not from memory.
-3. Interactive actions (`move`, `click`, `scroll`, `key`, `type`) already attach a fresh screenshot after they run.
+3. Interactive actions (`move`, `click`, `scroll`, `key`, `type`) already attach a fresh screenshot after they run; inspect it before claiming the requested outcome succeeded.
 4. Use `status` for state without starting a session.
 5. Use `capture` only when you need another screenshot without taking an action.
 
@@ -67,6 +67,8 @@ If any tool result contains `COMPUTER_USE_REARM_REQUIRED` or `status=rearm requi
 - If a click dismisses a menu or popup without producing the expected next UI, treat that attempt as failed.
 - If the same approach has already failed twice without visible progress, switch strategy instead of repeating it.
 - Do not infer focus or task completion from chat logs, sidebars, tool summaries, or status text.
+- Never claim a window was hidden, minimized, moved, text was submitted, or navigation completed until the latest screenshot visibly confirms it.
+- Treat Ubuntu/Wayland window-manager shortcuts such as `Alt+F9` as attempts only; verify the result from the fresh screenshot before deciding what happened.
 - For browser-navigation tasks done through this tool, only claim success if the browser content area visibly shows the destination page or result.
 - If the attached screenshot appears unchanged after a state-changing action, use one explicit `capture` to verify before repeating the same action.
 - Use `type(..., submit=true)` only for URL or navigation-style entry where Enter should fire immediately after typing.

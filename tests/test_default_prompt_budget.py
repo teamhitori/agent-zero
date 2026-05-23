@@ -74,3 +74,16 @@ def test_a0_small_profile_removed_and_prompt_text_generic():
 
     for path in _iter_prompt_files():
         assert "a0_small" not in path.read_text(encoding="utf-8")
+
+
+def test_prompt_token_estimate_omits_embedded_image_data_urls():
+    embedded_png = "data:image/png;base64," + ("ABCDabcd0123+/==" * 20_000)
+    prompt_text = f"user: please inspect this screenshot {embedded_png}"
+
+    sanitized = tokens.sanitize_embedded_image_data_urls(prompt_text)
+
+    assert "ABCDabcd0123+/==" not in sanitized
+    assert "data:image/png;base64," in sanitized
+    assert tokens.EMBEDDED_IMAGE_DATA_PLACEHOLDER in sanitized
+    assert tokens.approximate_prompt_tokens(prompt_text) < 100
+    assert tokens.approximate_prompt_tokens(prompt_text) < tokens.approximate_tokens(prompt_text) / 100

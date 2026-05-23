@@ -584,7 +584,7 @@ class Agent:
             Agent.DATA_NAME_CTX_WINDOW,
             {
                 "text": full_text,
-                "tokens": tokens.approximate_tokens(full_text),
+                "tokens": tokens.approximate_prompt_tokens(full_text),
             },
         )
 

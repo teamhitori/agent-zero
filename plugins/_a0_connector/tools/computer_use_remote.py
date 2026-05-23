@@ -23,6 +23,9 @@ COMPUTER_USE_OP_TIMEOUT = 180.0
 COMPUTER_USE_OP_EVENT = "connector_computer_use_op"
 CAPTURE_TOKENS_ESTIMATE = 1500
 MAX_CAPTURE_ARTIFACT_SIZE_BYTES = 25 * 1024 * 1024
+CAPTURE_VERIFICATION_NOTE = (
+    "Do not claim success unless this screen visibly confirms the requested outcome."
+)
 REARM_REQUIRED_DEFAULT_MESSAGE = (
     "Computer use is configured, but the installed desktop-control backend is not armed."
 )
@@ -204,7 +207,7 @@ class ComputerUseRemote(Tool):
             summary = self._record_capture(capture_data)
         except Exception as exc:
             return f"Automatic screen refresh failed: {exc}"
-        return f"Latest screen attached: {summary}"
+        return f"Latest screen attached: {summary} {CAPTURE_VERIFICATION_NOTE}"
 
     def _auto_capture_settle_seconds(self, action: str) -> float:
         if action == "start_session":
@@ -288,7 +291,7 @@ class ComputerUseRemote(Tool):
 
         if action == "capture":
             summary = self._record_capture(data)
-            return f"Current screen attached: {summary}"
+            return f"Current screen attached: {summary} {CAPTURE_VERIFICATION_NOTE}"
         if action == "status":
             return self._format_status(data)
         if action == "start_session":
