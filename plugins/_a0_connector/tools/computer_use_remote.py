@@ -357,7 +357,10 @@ class ComputerUseRemote(Tool):
     def _format_error(self, result: dict[str, Any]) -> str:
         error = str(result.get("error") or "Unknown error")
         code = str(result.get("code") or "")
-        if code == "COMPUTER_USE_REARM_REQUIRED" or error == "COMPUTER_USE_REARM_REQUIRED":
+        if code in {"COMPUTER_USE_REARM_REQUIRED", "COMPUTER_USE_APPROVAL_REQUIRED"} or error in {
+            "COMPUTER_USE_REARM_REQUIRED",
+            "COMPUTER_USE_APPROVAL_REQUIRED",
+        }:
             detail = error if error and error != code else REARM_REQUIRED_DEFAULT_MESSAGE
             return (
                 "COMPUTER_USE_REARM_REQUIRED: "
