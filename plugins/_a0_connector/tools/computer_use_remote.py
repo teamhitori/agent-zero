@@ -6,7 +6,7 @@ from pathlib import Path
 import uuid
 from typing import Any
 
-from helpers import history
+from helpers.print_style import PrintStyle
 from helpers.tool import Response, Tool
 from helpers.ws import NAMESPACE
 from helpers.ws_manager import ConnectionNotFoundError, get_shared_ws_manager
@@ -62,6 +62,8 @@ _SUPPORTED_ACTIONS = {
 
 class ComputerUseRemote(Tool):
     async def execute(self, **kwargs: Any) -> Response:
+        self._latest_capture_content: list[dict[str, Any]] | None = None
+        self._latest_capture_preview = ""
         action = str(self.args.get("action") or "").strip().lower()
         if action not in _SUPPORTED_ACTIONS:
             return Response(
@@ -133,10 +135,37 @@ class ComputerUseRemote(Tool):
         if capture_note:
             message = f"{message} {capture_note}".strip()
 
-        return Response(
-            message=message,
-            break_loop=False,
+        return self._response(message)
+
+    async def after_execution(self, response: Response, **kwargs: Any) -> None:
+        if not response.additional or not response.additional.get("raw_content"):
+            await super().after_execution(response, **kwargs)
+            return
+
+        text = _sanitize_tool_text(response.message.strip())
+        additional = dict(response.additional)
+        token_estimate = self._coerce_token_estimate(additional.pop("_tokens", CAPTURE_TOKENS_ESTIMATE))
+        log_id = str(getattr(getattr(self, "log", None), "id", "") or "")
+        message = self.agent.hist_add_tool_result(
+            self.name,
+            text,
+            id=log_id,
+            **additional,
         )
+        if hasattr(message, "tokens"):
+            message.tokens = token_estimate
+
+        agent_name = str(getattr(self.agent, "agent_name", "Agent Zero") or "Agent Zero")
+        PrintStyle(
+            font_color="#1B4F72",
+            background_color="white",
+            padding=True,
+            bold=True,
+        ).print(f"{agent_name}: Response from tool '{self.name}'")
+        PrintStyle(font_color="#85C1E9").print(text)
+        if getattr(self, "log", None) is not None:
+            self.log.update(content=text)
+        self._prune_prior_capture_history()
 
     async def _dispatch_payload(self, *, sid: str, payload: dict[str, Any]) -> dict[str, Any]:
         op_id = str(payload.get("op_id") or "").strip()
@@ -384,14 +413,41 @@ class ComputerUseRemote(Tool):
                 summary = f"{summary} Fresh frame {fresh_state}."
             else:
                 summary = f"{summary} Fresh capture requested."
-        content = [
+        self._latest_capture_content = [
             {"type": "text", "text": summary},
             {"type": "image_url", "image_url": {"url": display_ref}},
         ]
-        raw_message = history.RawMessage(raw_content=content, preview=summary)
-        self.agent.hist_add_message(False, content=raw_message, tokens=CAPTURE_TOKENS_ESTIMATE)
-        self._prune_prior_capture_history()
+        self._latest_capture_preview = summary
         return summary
+
+    def _response(self, message: str) -> Response:
+        capture_content = self._latest_capture_content
+        if not capture_content:
+            return Response(message=message, break_loop=False)
+
+        raw_content = [dict(item) for item in capture_content]
+        if raw_content and raw_content[0].get("type") == "text":
+            raw_content[0] = {"type": "text", "text": message}
+        else:
+            raw_content.insert(0, {"type": "text", "text": message})
+
+        return Response(
+            message=message,
+            break_loop=False,
+            additional={
+                "raw_content": raw_content,
+                "preview": self._latest_capture_preview or message,
+                "_tokens": CAPTURE_TOKENS_ESTIMATE,
+            },
+        )
+
+    @staticmethod
+    def _coerce_token_estimate(value: object) -> int:
+        try:
+            estimate = int(value or 0)
+        except (TypeError, ValueError):
+            estimate = 0
+        return estimate if estimate > 0 else CAPTURE_TOKENS_ESTIMATE
 
     def _prune_prior_capture_history(self) -> None:
         history_obj = getattr(self.agent, "history", None)
@@ -525,3 +581,11 @@ def _safe_filename(value: str) -> str:
 def _estimated_base64_decoded_size(data: str) -> int:
     compact_length = sum(1 for char in data if not char.isspace())
     return (compact_length * 3) // 4
+
+
+def _sanitize_tool_text(value: str) -> str:
+    try:
+        from helpers.strings import sanitize_string
+    except Exception:
+        return value
+    return sanitize_string(value)
