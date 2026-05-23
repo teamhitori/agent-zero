@@ -6,6 +6,7 @@ from pathlib import Path
 import uuid
 from typing import Any
 
+from helpers import history
 from helpers.print_style import PrintStyle
 from helpers.tool import Response, Tool
 from helpers.ws import NAMESPACE
@@ -24,7 +25,9 @@ COMPUTER_USE_OP_EVENT = "connector_computer_use_op"
 CAPTURE_TOKENS_ESTIMATE = 1500
 MAX_CAPTURE_ARTIFACT_SIZE_BYTES = 25 * 1024 * 1024
 CAPTURE_VERIFICATION_NOTE = (
-    "Do not claim success unless this screen visibly confirms the requested outcome."
+    "Inspect the attached screenshot before the next action; do not claim or proceed "
+    "from assumed state. If you cannot see the screenshot, stop and report that visual "
+    "verification is unavailable."
 )
 REARM_REQUIRED_DEFAULT_MESSAGE = (
     "Computer use is configured, but the installed desktop-control backend is not armed."
@@ -144,16 +147,21 @@ class ComputerUseRemote(Tool):
 
         text = _sanitize_tool_text(response.message.strip())
         additional = dict(response.additional)
+        raw_content = additional.pop("raw_content", None)
+        preview = str(additional.pop("preview", "") or "").strip() or text
         token_estimate = self._coerce_token_estimate(additional.pop("_tokens", CAPTURE_TOKENS_ESTIMATE))
         log_id = str(getattr(getattr(self, "log", None), "id", "") or "")
-        message = self.agent.hist_add_tool_result(
+        self.agent.hist_add_tool_result(
             self.name,
             text,
             id=log_id,
             **additional,
         )
-        if hasattr(message, "tokens"):
-            message.tokens = token_estimate
+        self.agent.hist_add_message(
+            False,
+            content=history.RawMessage(raw_content=raw_content, preview=preview),
+            tokens=token_estimate,
+        )
 
         agent_name = str(getattr(self.agent, "agent_name", "Agent Zero") or "Agent Zero")
         PrintStyle(
@@ -472,6 +480,14 @@ class ComputerUseRemote(Tool):
                 message.tokens = message.calculate_tokens()
 
     def _resolve_capture_ref(self, data: dict[str, Any]) -> tuple[str, str]:
+        path_error: FileNotFoundError | None = None
+        try:
+            image_path, display_path = self._resolve_capture_path(data)
+        except FileNotFoundError as exc:
+            path_error = exc
+        else:
+            return display_path, image_path.stem
+
         artifact = data.get("artifact")
         if isinstance(artifact, dict) and str(artifact.get("encoding", "")).strip().lower() == "base64":
             encoded = str(artifact.get("data") or "")
@@ -488,8 +504,9 @@ class ComputerUseRemote(Tool):
                 filename = _safe_filename(str(artifact.get("filename") or "computer-use-capture.png"))
                 return f"data:{mime};base64,{encoded}", Path(filename).stem
 
-        image_path, display_path = self._resolve_capture_path(data)
-        return display_path, image_path.stem
+        if path_error is not None:
+            raise path_error
+        raise FileNotFoundError("Capture artifact was not found in the tool response.")
 
     def _collect_capture_messages(self, history_obj: Any) -> list[Any]:
         messages: list[Any] = []

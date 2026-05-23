@@ -568,5 +568,6 @@ def test_computer_use_remote_is_runtime_checked_standard_tool():
     assert '"tool_name": "computer_use_remote"' in standard_prompt_text
     assert "not scoped to a single chat context" in standard_prompt_text
     assert "checked when the tool runs" in standard_prompt_text
+    assert "visual verification is unavailable" in standard_prompt_text
     assert '"tool_name": "computer_use_remote"' in skill_text
     assert "Beta desktop control" in skill_text

@@ -136,9 +136,12 @@ def test_computer_use_remote_prompt_requires_visual_verification_after_actions()
 
     assert "Treat key presses, clicks, scrolling, typing" in prompt
     assert "attempts, not success" in prompt
+    assert "visual verification is unavailable" in prompt
+    assert "do not continue by assuming the host state" in prompt
     assert "Super+H" in prompt
     assert '["Super","H"]' in prompt
     assert "Alt+F9" in prompt
+    assert "cannot actually see the image" in skill
     assert "Do not use `Alt+F9` as the primary hide/minimize shortcut" in skill
     assert "A `type` tool result only confirms keystrokes were sent" in skill
     assert "do not type follow-up text into the active field" in skill

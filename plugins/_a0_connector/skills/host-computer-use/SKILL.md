@@ -80,6 +80,7 @@ If any tool result contains `COMPUTER_USE_REARM_REQUIRED` or `status=rearm requi
 ## Operating Rules
 
 - Only the latest screenshot or a definitive tool result counts as evidence.
+- If a tool result says a screenshot was attached but you cannot actually see the image, stop and report that visual verification is unavailable. Do not continue with another action from an assumed host state.
 - The current API uses normalized global screen coordinates; do not assume window ids, element indexes, background-safe input, or semantic click targets unless the runtime explicitly advertises them.
 - Prefer accessibility and semantic UI paths first: shortcuts, command palettes, menu accelerators, address/search bars, focus traversal, and other keyboard-accessible controls.
 - Prefer `key` and `type` over pointer actions whenever a reliable keyboard path exists.
