@@ -136,9 +136,14 @@ def test_computer_use_remote_prompt_requires_visual_verification_after_actions()
 
     assert "Treat key presses, clicks, scrolling, typing" in prompt
     assert "attempts, not success" in prompt
+    assert "Super+H" in prompt
+    assert '["Super","H"]' in prompt
     assert "Alt+F9" in prompt
+    assert "Do not use `Alt+F9` as the primary hide/minimize shortcut" in skill
+    assert "A `type` tool result only confirms keystrokes were sent" in skill
+    assert "do not type follow-up text into the active field" in skill
     assert "visibly confirms" in skill
-    assert "Ubuntu/Wayland" in skill
+    assert "Ubuntu/GNOME/Wayland" in skill
 
 
 def test_remote_file_and_exec_tools_are_standard_tool_prompts_independent_from_context():

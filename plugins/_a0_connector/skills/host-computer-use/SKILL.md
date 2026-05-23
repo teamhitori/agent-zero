@@ -88,7 +88,9 @@ If any tool result contains `COMPUTER_USE_REARM_REQUIRED` or `status=rearm requi
 - If the same approach has already failed twice without visible progress, switch strategy instead of repeating it.
 - Do not infer focus or task completion from chat logs, sidebars, tool summaries, or status text.
 - Never claim a window was hidden, minimized, moved, text was submitted, or navigation completed until the latest screenshot visibly confirms it.
-- Treat Ubuntu/Wayland window-manager shortcuts such as `Alt+F9` as attempts only; verify the result from the fresh screenshot before deciding what happened.
+- On Ubuntu/GNOME/Wayland, use `Super+H` (`{"action":"key","keys":["Super","H"]}`) to hide the active window. Do not use `Alt+F9` as the primary hide/minimize shortcut on this environment; it often leaves the window visible.
+- After any hide/minimize shortcut, inspect the fresh screenshot. If the target window or focused composer is still visible, treat the attempt as failed and do not type follow-up text into the active field.
+- A `type` tool result only confirms keystrokes were sent. It is not evidence that the text landed in the intended application, nor evidence that a window was hidden first.
 - For browser-navigation tasks done through this tool, only claim success if the browser content area visibly shows the destination page or result.
 - If the attached screenshot appears unchanged after a state-changing action, use one explicit `capture` to verify before repeating the same action.
 - Use `type(..., submit=true)` only for URL or navigation-style entry where Enter should fire immediately after typing.
