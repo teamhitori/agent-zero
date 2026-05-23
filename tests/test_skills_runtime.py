@@ -301,10 +301,40 @@ def test_renamed_skills_use_standard_frontmatter_only():
     for path in skill_paths:
         frontmatter, body, errors = runtime.split_frontmatter(path.read_text(encoding="utf-8"))
         assert errors == []
-        assert set(frontmatter) == {"name", "description"}
+        expected_keys = {"name", "description"}
+        if path.parent.name == "host-computer-use":
+            expected_keys.update({"tags", "triggers"})
+        assert set(frontmatter) == expected_keys
         assert frontmatter["name"] == path.parent.name
         assert frontmatter["description"]
         assert body
+
+
+def test_host_computer_use_ranks_before_linux_desktop_for_host_screen_queries(monkeypatch):
+    host_skill = runtime.skill_from_markdown(
+        PROJECT_ROOT / "plugins" / "_a0_connector" / "skills" / "host-computer-use" / "SKILL.md"
+    )
+    linux_skill = runtime.skill_from_markdown(
+        PROJECT_ROOT / "plugins" / "_desktop" / "skills" / "linux-desktop" / "SKILL.md"
+    )
+    assert host_skill is not None
+    assert linux_skill is not None
+    monkeypatch.setattr(runtime, "list_skills", lambda *args, **kwargs: [linux_skill, host_skill])
+
+    host_queries = (
+        "hide a window on my host computer screen with computer use",
+        "take screenshot of my local Ubuntu Wayland desktop",
+        "minimize a window on my screen",
+    )
+    for query in host_queries:
+        results = runtime.search_skills(query, limit=2)
+        assert results[0].name == "host-computer-use"
+
+    xpra_results = runtime.search_skills(
+        "operate Agent Zero built-in Xpra Desktop LibreOffice GUI",
+        limit=2,
+    )
+    assert xpra_results[0].name == "linux-desktop"
 
 
 def test_unload_agent_skill_removes_loaded_skill_by_name():

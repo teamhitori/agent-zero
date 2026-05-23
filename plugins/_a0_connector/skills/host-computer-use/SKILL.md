@@ -1,6 +1,20 @@
 ---
 name: host-computer-use
-description: Beta desktop control through the connected A0 CLI host. Use for screenshots, screen inspection, menus, native app UI, OS-level clicking, scrolling, typing, or checking computer_use_remote status. Do not use for ordinary browser navigation; host browser requests should use the browser tool.
+description: Beta desktop control through the connected A0 CLI host. Use for the user's host/local computer screenshots, screen inspection, menus, native app UI, OS-level clicking, scrolling, typing, or checking computer_use_remote status. Use instead of linux-desktop for host/local machine control. Do not use for ordinary browser navigation; host browser requests should use the browser tool.
+tags: ["host", "local", "desktop", "screen", "computer-use", "wayland", "ubuntu", "macos", "windows"]
+triggers:
+  - "computer use"
+  - "host computer"
+  - "host desktop"
+  - "local computer"
+  - "local desktop"
+  - "my computer"
+  - "my screen"
+  - "host screen"
+  - "local screen"
+  - "Ubuntu Wayland desktop"
+  - "hide window"
+  - "minimize window"
 ---
 
 # Host Computer Use
@@ -9,11 +23,17 @@ This skill unlocks the beta `computer_use_remote` tool for connected local deskt
 
 ## When to Use
 
-Load this skill before using `computer_use_remote` for local desktop and native UI tasks on the connected machine.
+Load this skill before using `computer_use_remote` for local desktop and native UI tasks on the connected machine. Use it for the user's real host screen, not the internal Agent Zero Desktop.
 
 If the task is browser-only and the user is flexible, prefer direct browser tooling because it is usually more reliable and token-efficient than screenshot-driven desktop control.
 
 If the task needs shell execution on the CLI host, load `host-code-execution` separately rather than treating desktop control and shell execution as one affordance.
+
+## Host vs Docker Desktop Boundary
+
+This skill controls the user's connected host/local computer through A0 CLI. It is not the built-in Linux Desktop/Xpra skill.
+
+Never switch to `linux-desktop`, the Agent Zero Desktop/Xpra surface, `desktopctl.sh`, `code_execution_tool`, or Docker/server shell commands as a fallback for host screen actions such as screenshots, clicking, typing, hiding/minimizing windows, or checking visible host UI. Those paths only see the internal Agent Zero runtime. If `computer_use_remote` is unavailable, disabled, or needs re-arming, stop and ask the user to run `/computer-use on` in the A0 CLI and approve the platform permission prompt.
 
 ## Browser Boundary
 

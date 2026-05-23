@@ -4,6 +4,8 @@ Runtime-gated beta desktop control through a connected A0 CLI on the user's host
 
 Use this for native host desktop UI inspection, screenshots, clicking, scrolling, typing, key presses, and status checks. Do not use it for ordinary web-page navigation or host-browser control; use the browser tool for web pages unless browser automation cannot express the task. For complex desktop workflows, load and follow skill `host-computer-use` before proceeding.
 
+This is the only desktop-control path for the user's connected host/local computer. Do not substitute the `linux-desktop` skill, the Agent Zero Desktop/Xpra surface, `desktopctl.sh`, `code_execution_tool`, or Docker/server shell commands for host screen actions; those target the internal Agent Zero runtime and cannot see or control the user's host screen.
+
 If the tool reports no CLI, disabled computer use, or `COMPUTER_USE_REARM_REQUIRED`, stop and tell the user to run `/computer-use on` in A0 CLI and approve any host permission prompt.
 
 Call `start_session` before screen-driven tasks. Use `status` for state only, `capture` for screenshots without an action, and `stop_session` when the desktop task is complete. Interactive actions should use normalized global-screen coordinates from the most recent capture.
