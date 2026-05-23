@@ -85,6 +85,7 @@ def test_chat_messages_to_response_body_preserves_image_parts_for_responses():
                     "role": "user",
                     "content": [
                         {"type": "text", "text": "Inspect this screenshot."},
+                        {"type": "text", "text": "Fresh screen attached."},
                         {"type": "image_url", "image_url": {"url": data_url}},
                     ],
                 }
@@ -97,6 +98,7 @@ def test_chat_messages_to_response_body_preserves_image_parts_for_responses():
             "role": "user",
             "content": [
                 {"type": "input_text", "text": "Inspect this screenshot."},
+                {"type": "input_text", "text": "Fresh screen attached."},
                 {"type": "input_image", "image_url": data_url, "detail": "auto"},
             ],
         }
